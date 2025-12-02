@@ -56,8 +56,8 @@ def get_limiter():
     global _limiter
     if _limiter is None:
         _limiter = Limiter(
-            key_func=get_remote_address,
-            default_limits=["50000 per day", "5000 per hour"]
+            key_func=get_remote_address
+            # default_limits will be read from app.config['RATELIMIT_DEFAULT'] when init_app is called
         )
     return _limiter
 
