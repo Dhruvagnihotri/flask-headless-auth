@@ -1,0 +1,6 @@
+include LICENSE
+include README.md
+recursive-include flask_headless_auth *.yml *.yaml
+recursive-exclude * __pycache__
+recursive-exclude * *.py[co]
+
