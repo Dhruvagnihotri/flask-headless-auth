@@ -9,6 +9,27 @@ from flask_headless_auth.oauth.stateless_handler import StatelessOAuthStateHandl
 
 logger = logging.getLogger(__name__)
 
+
+def _get_callback_uri(blueprint_name, endpoint_name):
+    """
+    Generate OAuth callback URI with proper HTTPS scheme detection.
+    
+    Handles production environments behind proxies (Heroku, AWS, etc.) that terminate SSL.
+    Respects X-Forwarded-Proto header to determine if request came via HTTPS.
+    """
+    # Check if we're behind a HTTPS proxy (Heroku, CloudFlare, AWS ELB, etc.)
+    forwarded_proto = request.headers.get('X-Forwarded-Proto', 'http')
+    is_secure = forwarded_proto == 'https' or request.is_secure
+    
+    # Generate URL with appropriate scheme
+    callback_uri = url_for(
+        f'{blueprint_name}.{endpoint_name}',
+        _external=True,
+        _scheme='https' if is_secure else 'http'
+    )
+    
+    return callback_uri
+
 class OAuthManager:
     def __init__(self, user_data_access: UserDataAccess, 
                  blueprint_name='authsvc', 
@@ -30,8 +51,8 @@ class OAuthManager:
 
     def google_login(self):
         try:
-            # Use dynamic blueprint name for backend callback URL
-            backend_callback_uri = url_for(f'{self.blueprint_name}.google_callback_authsvc', _external=True)
+            # Use dynamic blueprint name for backend callback URL with HTTPS detection
+            backend_callback_uri = _get_callback_uri(self.blueprint_name, 'google_callback_authsvc')
             
             # Get frontend redirect URI
             frontend_redirect_uri = request.args.get('redirect_uri', self.post_login_redirect_url)
@@ -81,7 +102,7 @@ class OAuthManager:
                 'code': code,
                 'client_id': oauth_clients.google.client_id,
                 'client_secret': oauth_clients.google.client_secret,
-                'redirect_uri': url_for(f'{self.blueprint_name}.google_callback_authsvc', _external=True),
+                'redirect_uri': _get_callback_uri(self.blueprint_name, 'google_callback_authsvc'),
                 'grant_type': 'authorization_code'
             })
             
@@ -126,8 +147,8 @@ class OAuthManager:
 
     def microsoft_login(self):
         try:
-            # Use dynamic blueprint name for backend callback URL
-            backend_callback_uri = url_for(f'{self.blueprint_name}.microsoft_callback_authsvc', _external=True)
+            # Use dynamic blueprint name for backend callback URL with HTTPS detection
+            backend_callback_uri = _get_callback_uri(self.blueprint_name, 'microsoft_callback_authsvc')
             
             # Get frontend redirect URI
             frontend_redirect_uri = request.args.get('redirect_uri', self.post_login_redirect_url)
@@ -174,7 +195,7 @@ class OAuthManager:
                 'code': code,
                 'client_id': oauth_clients.microsoft.client_id,
                 'client_secret': oauth_clients.microsoft.client_secret,
-                'redirect_uri': url_for(f'{self.blueprint_name}.microsoft_callback_authsvc', _external=True),
+                'redirect_uri': _get_callback_uri(self.blueprint_name, 'microsoft_callback_authsvc'),
                 'grant_type': 'authorization_code'
             })
             
