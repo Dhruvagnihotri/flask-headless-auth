@@ -57,7 +57,7 @@ def get_limiter():
     if _limiter is None:
         _limiter = Limiter(
             key_func=get_remote_address,
-            default_limits=["10000 per day", "1000 per hour"]
+            default_limits=["50000 per day", "5000 per hour"]
         )
     return _limiter
 
