@@ -43,6 +43,6 @@ DEFAULT_CONFIG = {
     
     # Rate limiting
     'RATELIMIT_ENABLED': True,
-    'RATELIMIT_DEFAULT': '100 per hour',
+    'RATELIMIT_DEFAULT': '1000 per hour',
 }
 
