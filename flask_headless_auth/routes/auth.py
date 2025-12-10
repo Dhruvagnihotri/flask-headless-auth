@@ -5,11 +5,15 @@ flask_headless_auth.routes.auth
 Authentication routes blueprint.
 """
 
-from flask import Blueprint, request, jsonify, make_response, Response
+import logging
+from flask import Blueprint, request, jsonify, make_response, Response, current_app
 from flask_jwt_extended import jwt_required, get_jwt_identity, unset_jwt_cookies, get_jwt
 from flask_headless_auth.managers import AuthManager
 from flask_headless_auth.data_access import SQLAlchemyUserRepository
 from flask_headless_auth.extensions import get_cache
+
+# Initialize logger
+logger = logging.getLogger(__name__)
 
 cache = get_cache()
 
@@ -199,38 +203,82 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     @authsvc.route('/user/@me', methods=['GET'])
     @jwt_required()  # Requires the user to be authenticated
     def get_logged_in_user():
+        """
+        Get current user details.
+        
+        Uses composable serialization pattern:
+        1. Tries user.to_dict() first (for apps using multiple packages)
+        2. Falls back to user.to_auth_dict() (auth fields only)
+        3. Last resort: hardcoded fields
+        
+        This allows apps to combine multiple package mixins (auth + payments + custom)
+        without modifying this route.
+        """
         try:
             current_user_email = get_jwt_identity()  # string (email)
+            
             # Check if user details are in cache
             cached_user = cache.get(f"user_{current_user_email}")
             if cached_user:
                 return jsonify({"user": cached_user}), 200
-            user = user_data_access.find_user_by_email(current_user_email)
-            if not user:
+            
+            # Get user from database (as model object, not dict)
+            user_dict = user_data_access.find_user_by_email(current_user_email)
+            if not user_dict:
                 return jsonify({"error": "User not found"}), 404
-            user_details = {
-                "id": user["id"],
-                "email": user["email"],
-                "roles": user["role_id"],  # Example if user has roles associated
-                "first_name": user["first_name"],
-                "last_name": user["last_name"],
-                "phone_number": user["phone_number"],
-                "is_verified": user["is_verified"],
-                "bio": user.get("bio"),
-                "occupation": user.get("occupation"),
-                "date_of_birth": user.get("date_of_birth").isoformat() if user.get("date_of_birth") else None,
-                "address": user.get("address"),
-                "city": user.get("city"),
-                "state": user.get("state"),
-                "country": user.get("country"),
-                "zip_code": user.get("zip_code"),
-                "profile_picture": user.get("profile_picture")
-            }
+            
+            # Get the actual model instance if available
+            # This allows us to call to_dict() methods
+            try:
+                from flask_headless_auth.extensions import get_db
+                db = get_db()
+                # Repository stores model as self.User
+                user_model_class = user_data_access.User
+                user_obj = user_model_class.query.filter_by(email=current_user_email).first()
+                
+                if user_obj:
+                    # Try to_dict() first (app may have overridden it to combine packages)
+                    if hasattr(user_obj, 'to_dict') and callable(user_obj.to_dict):
+                        user_details = user_obj.to_dict()
+                    elif hasattr(user_obj, 'to_auth_dict') and callable(user_obj.to_auth_dict):
+                        user_details = user_obj.to_auth_dict()
+                    else:
+                        # Fallback to manual dict
+                        user_details = user_dict
+                else:
+                    # No model object, use dict
+                    user_details = user_dict
+                    
+            except Exception as e:
+                # If model access fails, fall back to dict-based approach
+                logger.warning(f"Could not access user model, using dict: {e}")
+                user_details = {
+                    "id": user_dict["id"],
+                    "email": user_dict["email"],
+                    "roles": user_dict.get("role_id"),
+                    "first_name": user_dict.get("first_name"),
+                    "last_name": user_dict.get("last_name"),
+                    "phone_number": user_dict.get("phone_number"),
+                    "is_verified": user_dict.get("is_verified"),
+                    "bio": user_dict.get("bio"),
+                    "occupation": user_dict.get("occupation"),
+                    "date_of_birth": user_dict.get("date_of_birth").isoformat() if user_dict.get("date_of_birth") else None,
+                    "address": user_dict.get("address"),
+                    "city": user_dict.get("city"),
+                    "state": user_dict.get("state"),
+                    "country": user_dict.get("country"),
+                    "zip_code": user_dict.get("zip_code"),
+                    "profile_picture": user_dict.get("profile_picture")
+                }
+            
             # Cache the user details only on successful retrieval
             cache.set(f"user_{current_user_email}", user_details, timeout=300)  # Cache for 5 minutes
             return jsonify({"user": user_details}), 200
+            
         except Exception as e:
             print(f"Error in fetching logged-in user details: {e}")
+            import traceback
+            traceback.print_exc()
             return jsonify({"error": "Error fetching user details", "details": str(e)}), 500
     
     # Update User Route

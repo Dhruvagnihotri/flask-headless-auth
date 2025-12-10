@@ -187,7 +187,8 @@ class UserManager:
         return jsonify({'message': 'User updated successfully', 'user': updated_user}), 200
 
     def login_user(self, user_data):
-        user = self.user_data_access.find_user_by_email(user_data.get('email'))
+        # Include password_hash for authentication
+        user = self.user_data_access.find_user_by_email(user_data.get('email'), include_password_hash=True)
 
         if not user or not self.user_data_access.verify_password(user['password_hash'], user_data.get('password')):
             return {'error': 'Invalid email or password', 'status': 401}
@@ -205,8 +206,11 @@ class UserManager:
         self.user_data_access.update_user(user['id'], {'last_login_at': datetime.utcnow()})
         self.user_data_access.log_user_activity(user['id'], "User logged in")
 
+        # Remove password_hash from response for security
+        safe_user = {k: v for k, v in user.items() if k != 'password_hash'}
+
         return {
-            'user': user,
+            'user': safe_user,
             'is_verified': user['is_verified'],
             'require_verification': require_verification
         }

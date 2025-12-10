@@ -31,6 +31,8 @@ class AuthSvc:
                  password_reset_token_model=None, user_activity_log_model=None,
                  oauth_token_model=None,
                  post_login_redirect_url=None,
+                 url_prefix: Optional[str] = None,
+                 blueprint_name: Optional[str] = None,
                  **kwargs):
         """
         Initialize the extension.
@@ -46,6 +48,8 @@ class AuthSvc:
             user_activity_log_model: Custom UserActivityLog model (optional)
             oauth_token_model: Custom OAuthToken model (optional)
             post_login_redirect_url: Default frontend URL for OAuth redirects (optional)
+            url_prefix: URL prefix for routes (default: from config or '/api/auth')
+            blueprint_name: Unique blueprint name (default: auto-generated from user table)
             **kwargs: Additional configuration options
         """
         self.app = None
@@ -67,6 +71,10 @@ class AuthSvc:
         # Store OAuth configuration
         self.post_login_redirect_url = post_login_redirect_url
         
+        # Store URL prefix and blueprint name (instance-level, not config-dependent)
+        self.url_prefix = url_prefix
+        self.blueprint_name = blueprint_name
+        
         if app is not None:
             self.init_app(app, **kwargs)
     
@@ -76,9 +84,15 @@ class AuthSvc:
         
         Args:
             app: Flask application instance
-            **kwargs: Additional configuration options
+            **kwargs: Additional configuration options (url_prefix, blueprint_name, etc.)
         """
         self.app = app
+        
+        # Allow overriding url_prefix and blueprint_name via init_app (app factory pattern)
+        if 'url_prefix' in kwargs and not self.url_prefix:
+            self.url_prefix = kwargs['url_prefix']
+        if 'blueprint_name' in kwargs and not self.blueprint_name:
+            self.blueprint_name = kwargs['blueprint_name']
         
         # Load default configuration
         self._load_config(app)
@@ -326,12 +340,16 @@ class AuthSvc:
         """Register auth routes."""
         from flask_headless_auth.routes import create_auth_blueprint
         
-        url_prefix = app.config.get('AUTHSVC_URL_PREFIX', '/api/auth')
+        # Priority: instance url_prefix > config > default
+        url_prefix = self.url_prefix or app.config.get('AUTHSVC_URL_PREFIX', '/api/auth')
         
-        # Create unique blueprint name from User model's tablename
+        # Create unique blueprint name from User model's tablename or use provided
         # This ensures each AuthSvc instance gets a unique blueprint
-        user_table = self.user_model.__tablename__
-        blueprint_name = f'authsvc_{user_table}'.replace('_users', '')
+        if self.blueprint_name:
+            blueprint_name = self.blueprint_name
+        else:
+            user_table = self.user_model.__tablename__
+            blueprint_name = f'authsvc_{user_table}'.replace('_users', '')
         
         # Get post-login redirect URL from config or instance variable
         # Priority: app config > instance variable > default

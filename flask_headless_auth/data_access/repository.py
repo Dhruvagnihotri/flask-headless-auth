@@ -43,18 +43,37 @@ class SQLAlchemyUserRepository(UserDataAccess):
         """Get database instance."""
         return extensions.db or extensions.get_db()
     
-    def _to_dict(self, obj):
-        """Convert SQLAlchemy model to dictionary."""
+    def _to_dict(self, obj, include_password_hash=False):
+        """
+        Convert SQLAlchemy model to dictionary.
+        
+        Args:
+            obj: SQLAlchemy model instance
+            include_password_hash: If True, includes password_hash for internal auth use
+        """
         if obj is None:
             return None
+        
+        # For internal authentication, use raw column attrs to include password_hash
+        if include_password_hash:
+            result = {c.key: getattr(obj, c.key) for c in inspect(obj).mapper.column_attrs}
+            return result
+        
+        # For external use, use to_dict() which excludes sensitive fields
         if hasattr(obj, 'to_dict'):
             return obj.to_dict()
         return {c.key: getattr(obj, c.key) for c in inspect(obj).mapper.column_attrs}
     
-    def find_user_by_email(self, email: str) -> Optional[Dict[str, Any]]:
-        """Find user by email."""
+    def find_user_by_email(self, email: str, include_password_hash=False) -> Optional[Dict[str, Any]]:
+        """
+        Find user by email.
+        
+        Args:
+            email: User's email address
+            include_password_hash: If True, includes password_hash for authentication
+        """
         user = self.User.query.filter_by(email=email).first()
-        return self._to_dict(user) if user else None
+        return self._to_dict(user, include_password_hash=include_password_hash) if user else None
     
     def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
         """Create new user."""
