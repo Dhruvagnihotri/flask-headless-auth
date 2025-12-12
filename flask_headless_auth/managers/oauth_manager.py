@@ -57,13 +57,26 @@ class OAuthManager:
             # Get frontend redirect URI
             frontend_redirect_uri = request.args.get('redirect_uri', self.post_login_redirect_url)
             
-            # Generate custom state and store redirect_uri in Redis (NOT session!)
-            # This works even when cookies are blocked
-            state = self.stateless_handler.save_state(frontend_redirect_uri)
+            # Collect custom data from query params
+            # Skip 'redirect_uri' as it's handled separately
+            # This allows apps to pass any custom data through OAuth flow
+            custom_data = {
+                key: value 
+                for key, value in request.args.items() 
+                if key != 'redirect_uri'
+            }
+            
+            # Generate custom state and store redirect_uri + custom_data
+            state = self.stateless_handler.save_state(
+                frontend_redirect_uri, 
+                custom_data=custom_data if custom_data else None
+            )
             
             logger.info(f"[StatelessOAuth] Google login initiated:")
             logger.info(f"  Backend callback: {backend_callback_uri}")
             logger.info(f"  Frontend redirect: {frontend_redirect_uri}")
+            if custom_data:
+                logger.info(f"  Custom data: {custom_data}")
             logger.info(f"  State is self-contained (no server storage, works without cookies)")
             
             # Pass our custom state to Authlib
@@ -80,14 +93,19 @@ class OAuthManager:
             if not state:
                 raise ValueError("No state parameter in callback")
             
-            # Retrieve redirect_uri from Redis using state (stateless!)
-            redirect_uri = self.stateless_handler.get_redirect_uri(state)
-            if not redirect_uri:
+            # Retrieve redirect_uri and custom_data from state (stateless!)
+            state_data = self.stateless_handler.get_state_data(state)
+            if not state_data:
                 raise ValueError("State not found or expired (OAuth session timeout)")
+            
+            redirect_uri = state_data.get('redirect_uri')
+            custom_data = state_data.get('custom_data', {})
             
             logger.info(f"[StatelessOAuth] Google callback received:")
             logger.info(f"  State verified (self-contained): {state[:20]}...")
             logger.info(f"  Frontend redirect: {redirect_uri}")
+            if custom_data:
+                logger.info(f"  Custom data: {custom_data}")
             
             # BYPASS Authlib's session-based state verification
             # Instead, manually exchange the authorization code for tokens
@@ -126,6 +144,8 @@ class OAuthManager:
             logger.info(f"[StatelessOAuth] Successfully fetched user info for: {user_info.get('email')}")
 
             user = self.user_data_access.find_user_by_email(user_info['email'])
+            is_new_user = user is None
+            
             if not user:
                 user_data = {
                     'email': user_info['email'],
@@ -136,6 +156,14 @@ class OAuthManager:
                     'is_verified': True
                 }
                 user = self.user_data_access.create_user(user_data)
+
+            # Store custom data in Flask g context for after_request hooks
+            # Apps can use this to access custom data passed through OAuth
+            if is_new_user and custom_data:
+                from flask import g
+                g.oauth_user_email = user_info['email']
+                g.oauth_custom_data = custom_data
+                logger.info(f"[StatelessOAuth] Stored custom data for new user {user_info['email']}: {list(custom_data.keys())}")
 
             logger.info(f"[StatelessOAuth] OAuth successful for user: {user_info['email']}")
             return user, redirect_uri
@@ -153,12 +181,25 @@ class OAuthManager:
             # Get frontend redirect URI
             frontend_redirect_uri = request.args.get('redirect_uri', self.post_login_redirect_url)
             
-            # Generate custom state and store redirect_uri in Redis (NOT session!)
-            state = self.stateless_handler.save_state(frontend_redirect_uri)
+            # Collect custom data from query params
+            # Skip 'redirect_uri' as it's handled separately
+            custom_data = {
+                key: value 
+                for key, value in request.args.items() 
+                if key != 'redirect_uri'
+            }
+            
+            # Generate custom state and store redirect_uri + custom_data
+            state = self.stateless_handler.save_state(
+                frontend_redirect_uri, 
+                custom_data=custom_data if custom_data else None
+            )
             
             logger.info(f"[StatelessOAuth] Microsoft login initiated:")
             logger.info(f"  Backend callback: {backend_callback_uri}")
             logger.info(f"  Frontend redirect: {frontend_redirect_uri}")
+            if custom_data:
+                logger.info(f"  Custom data: {custom_data}")
             logger.info(f"  State is self-contained (no server storage, works without cookies)")
             
             # Pass our custom state to Authlib
@@ -174,14 +215,19 @@ class OAuthManager:
             if not state:
                 raise ValueError("No state parameter in callback")
             
-            # Retrieve redirect_uri from Redis using state (stateless!)
-            redirect_uri = self.stateless_handler.get_redirect_uri(state)
-            if not redirect_uri:
+            # Retrieve redirect_uri and custom_data from state (stateless!)
+            state_data = self.stateless_handler.get_state_data(state)
+            if not state_data:
                 raise ValueError("State not found or expired (OAuth session timeout)")
+            
+            redirect_uri = state_data.get('redirect_uri')
+            custom_data = state_data.get('custom_data', {})
             
             logger.info(f"[StatelessOAuth] Microsoft callback received:")
             logger.info(f"  State verified (self-contained): {state[:20]}...")
             logger.info(f"  Frontend redirect: {redirect_uri}")
+            if custom_data:
+                logger.info(f"  Custom data: {custom_data}")
             
             # BYPASS Authlib's session-based state verification
             # Manual token exchange for Microsoft
@@ -212,6 +258,8 @@ class OAuthManager:
             logger.info(f"[StatelessOAuth] Successfully fetched user info for: {user_info.get('email')}")
 
             user = self.user_data_access.find_user_by_email(user_info['email'])
+            is_new_user = user is None
+            
             if not user:
                 user_data = {
                     'email': user_info['email'],
@@ -219,6 +267,14 @@ class OAuthManager:
                     'role_id': 2,
                 }
                 user = self.user_data_access.create_user(user_data)
+
+            # Store custom data in Flask g context for after_request hooks
+            # Apps can use this to access custom data passed through OAuth
+            if is_new_user and custom_data:
+                from flask import g
+                g.oauth_user_email = user_info['email']
+                g.oauth_custom_data = custom_data
+                logger.info(f"[StatelessOAuth] Stored custom data for new user {user_info['email']}: {list(custom_data.keys())}")
 
             logger.info(f"[StatelessOAuth] OAuth successful for user: {user_info['email']}")
             return user, redirect_uri

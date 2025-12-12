@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-headless-auth"
-version = "0.1.1"
+version = "0.1.2"
 description = "Modern, headless authentication for Flask APIs. JWT + OAuth + RBAC in one line."
 readme = "README.md"
 authors = [

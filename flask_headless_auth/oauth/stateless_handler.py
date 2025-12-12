@@ -40,7 +40,7 @@ class StatelessOAuthStateHandler:
             raise ValueError("SECRET_KEY must be configured for OAuth")
         return URLSafeTimedSerializer(secret, salt='oauth_state')
     
-    def save_state(self, redirect_uri, state=None):
+    def save_state(self, redirect_uri, state=None, custom_data=None):
         """
         Create a self-contained signed state parameter.
         NO server-side storage needed - everything is in the state itself!
@@ -48,6 +48,8 @@ class StatelessOAuthStateHandler:
         Args:
             redirect_uri: Frontend redirect URI to encode in state
             state: Ignored (kept for backward compatibility)
+            custom_data: Optional dict of custom data to pass through OAuth flow
+                        (e.g., {'promo_code': 'xyz', 'referral': 'abc'})
         
         Returns:
             state: Signed state string containing all data
@@ -58,11 +60,17 @@ class StatelessOAuthStateHandler:
             'nonce': secrets.token_urlsafe(16)  # CSRF protection
         }
         
+        # Add custom data if provided
+        if custom_data:
+            state_data['custom_data'] = custom_data
+        
         # Sign and serialize the state data
         serializer = self._get_serializer()
         signed_state = serializer.dumps(state_data)
         
         print(f"[SelfContainedOAuth] Created signed state (no server storage): {signed_state[:40]}...")
+        if custom_data:
+            print(f"[SelfContainedOAuth] State includes custom data: {list(custom_data.keys())}")
         return signed_state
     
     def get_redirect_uri(self, state):
@@ -78,14 +86,36 @@ class StatelessOAuthStateHandler:
         Raises:
             ValueError: If state is invalid or expired
         """
+        state_data = self.get_state_data(state)
+        return state_data.get('redirect_uri')
+    
+    def get_state_data(self, state):
+        """
+        Verify signature and decode state parameter to get all state data.
+        
+        Args:
+            state: Signed state string from OAuth callback
+        
+        Returns:
+            dict: Decoded state data containing:
+                  - redirect_uri: Frontend redirect URL
+                  - custom_data: Dict of custom data passed through OAuth (if any)
+                  - nonce: CSRF protection token
+        
+        Raises:
+            ValueError: If state is invalid or expired
+        """
         try:
             serializer = self._get_serializer()
             # Verify signature and check expiration
             state_data = serializer.loads(state, max_age=self.max_age)
             
             redirect_uri = state_data.get('redirect_uri')
+            custom_data = state_data.get('custom_data', {})
             print(f"[SelfContainedOAuth] State verified and decoded: {redirect_uri}")
-            return redirect_uri
+            if custom_data:
+                print(f"[SelfContainedOAuth] State includes custom data: {list(custom_data.keys())}")
+            return state_data
             
         except SignatureExpired:
             print(f"[SelfContainedOAuth] State expired (>{self.max_age}s)")
