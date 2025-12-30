@@ -75,8 +75,15 @@ class SQLAlchemyUserRepository(UserDataAccess):
         user = self.User.query.filter_by(email=email).first()
         return self._to_dict(user, include_password_hash=include_password_hash) if user else None
     
-    def create_user(self, user_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create new user."""
+    def create_user(self, user_data: Dict[str, Any], commit: bool = True) -> Dict[str, Any]:
+        """
+        Create new user.
+        
+        Args:
+            user_data: User data dictionary
+            commit: Whether to commit the transaction (default True).
+                    Set to False to batch multiple operations.
+        """
         # Map and filter data
         mapped_data = self.map_user_data(user_data)
         filtered_data = self.filter_valid_fields(mapped_data, self.User)
@@ -88,12 +95,22 @@ class SQLAlchemyUserRepository(UserDataAccess):
         # Create user
         user = self.User(**filtered_data)
         self.db.session.add(user)
-        self.db.session.commit()
+        
+        if commit:
+            self.db.session.commit()
         
         return self._to_dict(user)
     
-    def update_user(self, user_id: int, user_data: Dict[str, Any]) -> None:
-        """Update existing user."""
+    def update_user(self, user_id: int, user_data: Dict[str, Any], commit: bool = True) -> None:
+        """
+        Update existing user.
+        
+        Args:
+            user_id: User ID to update
+            user_data: User data dictionary
+            commit: Whether to commit the transaction (default True).
+                    Set to False to batch multiple operations.
+        """
         user = self.User.query.get(user_id)
         if user:
             mapped_data = self.map_user_data(user_data)
@@ -102,7 +119,8 @@ class SQLAlchemyUserRepository(UserDataAccess):
             for key, value in filtered_data.items():
                 setattr(user, key, value)
             
-            self.db.session.commit()
+            if commit:
+                self.db.session.commit()
     
     def verify_password(self, stored_password: str, provided_password: str) -> bool:
         """Verify password against hash."""
@@ -122,73 +140,111 @@ class SQLAlchemyUserRepository(UserDataAccess):
         users = self.User.query.all()
         return [self._to_dict(user) for user in users]
     
-    def delete_user(self, user_id: int) -> None:
-        """Delete user."""
+    def delete_user(self, user_id: int, commit: bool = True) -> None:
+        """
+        Delete user.
+        
+        Args:
+            user_id: User ID to delete
+            commit: Whether to commit the transaction (default True).
+        """
         user = self.User.query.get(user_id)
         if user:
             self.db.session.delete(user)
-            self.db.session.commit()
+            if commit:
+                self.db.session.commit()
     
-    def create_mfa_token(self, user_id: int, token: str, expires_at: datetime) -> None:
-        """Create MFA token."""
+    def create_mfa_token(self, user_id: int, token: str, expires_at: datetime, commit: bool = True) -> None:
+        """
+        Create MFA token.
+        
+        Args:
+            commit: Whether to commit the transaction (default True).
+        """
         mfa_token = self.MFAToken(user_id=user_id, token=token, expires_at=expires_at)
         self.db.session.add(mfa_token)
-        self.db.session.commit()
+        if commit:
+            self.db.session.commit()
     
-    def verify_mfa_token(self, user_id: int, token: str) -> bool:
-        """Verify MFA token."""
-        mfa_token = MFAToken.query.filter_by(
+    def verify_mfa_token(self, user_id: int, token: str, commit: bool = True) -> bool:
+        """
+        Verify MFA token.
+        
+        Args:
+            commit: Whether to commit the transaction (default True).
+        """
+        mfa_token = self.MFAToken.query.filter_by(
             user_id=user_id, token=token
         ).filter(
-            MFAToken.expires_at > datetime.utcnow()
+            self.MFAToken.expires_at > datetime.utcnow()
         ).first()
         
         if mfa_token:
             self.db.session.delete(mfa_token)
-            self.db.session.commit()
+            if commit:
+                self.db.session.commit()
             return True
         return False
     
-    def create_password_reset_token(self, user_id: int, token: str, expires_at: datetime) -> None:
-        """Create password reset token."""
+    def create_password_reset_token(self, user_id: int, token: str, expires_at: datetime, commit: bool = True) -> None:
+        """
+        Create password reset token.
+        
+        Args:
+            commit: Whether to commit the transaction (default True).
+        """
         reset_token = self.PasswordResetToken(
             user_id=user_id, 
             token=token, 
             expires_at=expires_at
         )
         self.db.session.add(reset_token)
-        self.db.session.commit()
+        if commit:
+            self.db.session.commit()
     
     def verify_password_reset_token(self, token: str) -> Optional[int]:
         """Verify password reset token and return user_id."""
-        reset_token = PasswordResetToken.query.filter_by(
+        reset_token = self.PasswordResetToken.query.filter_by(
             token=token
         ).filter(
-            PasswordResetToken.expires_at > datetime.utcnow()
+            self.PasswordResetToken.expires_at > datetime.utcnow()
         ).first()
         
         if reset_token:
             return reset_token.user_id
         return None
     
-    def log_user_activity(self, user_id: int, activity: str) -> None:
-        """Log user activity."""
+    def log_user_activity(self, user_id: int, activity: str, commit: bool = True) -> None:
+        """
+        Log user activity.
+        
+        Args:
+            commit: Whether to commit the transaction (default True).
+        """
         try:
             log = self.UserActivityLog(user_id=user_id, activity=activity)
             self.db.session.add(log)
-            self.db.session.commit()
+            if commit:
+                self.db.session.commit()
         except Exception as e:
             # Fail gracefully if activity logging table schema is outdated
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Activity logging failed (schema mismatch?): {e}")
-            self.db.session.rollback()
+            if commit:
+                self.db.session.rollback()
     
-    def blacklist_token(self, jti: str) -> None:
-        """Blacklist JWT token."""
+    def blacklist_token(self, jti: str, commit: bool = True) -> None:
+        """
+        Blacklist JWT token.
+        
+        Args:
+            commit: Whether to commit the transaction (default True).
+        """
         blacklisted_token = self.BlacklistedToken(jti=jti)
         self.db.session.add(blacklisted_token)
-        self.db.session.commit()
+        if commit:
+            self.db.session.commit()
     
     def is_token_blacklisted(self, jti: str) -> bool:
         """Check if token is blacklisted."""

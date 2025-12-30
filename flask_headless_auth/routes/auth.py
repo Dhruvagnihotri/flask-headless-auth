@@ -15,13 +15,20 @@ from flask_headless_auth.extensions import get_cache
 # Initialize logger
 logger = logging.getLogger(__name__)
 
-cache = get_cache()
+# Default cache key prefix for user data (documented for apps that need to invalidate)
+# Apps can use: cache.delete(f"{cache_key_prefix}{email}")
+DEFAULT_CACHE_KEY_PREFIX = "user_"
+
+# NOTE: Do NOT create module-level cache here!
+# Cache is passed as parameter to create_auth_blueprint() from the app.
+# This ensures app and package use the SAME cache instance.
 
 
 def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                           password_reset_token_model, user_activity_log_model,
                           cache=None, email_manager=None, blueprint_name='authsvc',
-                          post_login_redirect_url='http://localhost:3000'):
+                          post_login_redirect_url='http://localhost:3000',
+                          cache_key_prefix=None):
     """
     Create and return the auth blueprint.
     
@@ -35,7 +42,12 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         email_manager: Optional email manager instance
         blueprint_name: Name for the blueprint
         post_login_redirect_url: Default frontend URL for OAuth redirects
+        cache_key_prefix: Prefix for cache keys (default: 'user_'). 
+                          Use app-specific prefix in monorepo: 'brakit_user_', 'pdfwhiz_user_'
     """
+    # Use provided prefix or default
+    cache_key_prefix = cache_key_prefix or DEFAULT_CACHE_KEY_PREFIX
+    
     # Initialize the Blueprint for the auth service
     authsvc = Blueprint(blueprint_name, __name__)
     
@@ -174,7 +186,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         current_user_email = get_jwt_identity()  # string (email)
         auth_manager.blacklist_token_authsvc()
         # Clear user-specific cache
-        cache.delete(f"user_{current_user_email}")
+        if cache:
+            cache.delete(f"user_{current_user_email}")
         response = make_response(jsonify({"msg": "Successfully logged out"}))
         unset_jwt_cookies(response)
         return response
@@ -213,16 +226,25 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         
         This allows apps to combine multiple package mixins (auth + payments + custom)
         without modifying this route.
+        
+        Caching: Controlled by AUTHSVC_CACHE_USER_DATA config (default: False).
+        When enabled, user data is cached for AUTHSVC_CACHE_TIMEOUT seconds.
+        Applications should invalidate cache when user data changes externally
+        (e.g., via webhook callbacks) using their application-level cache.
         """
         try:
             current_user_email = get_jwt_identity()  # string (email)
             
-            # Check if user details are in cache
-            cached_user = cache.get(f"user_{current_user_email}")
-            if cached_user:
-                return jsonify({"user": cached_user}), 200
+            # Check if caching is enabled (application controls this)
+            cache_enabled = current_app.config.get('AUTHSVC_CACHE_USER_DATA', False)
+            cache_timeout = current_app.config.get('AUTHSVC_CACHE_TIMEOUT', 300)
             
-            # Get user from database (as model object, not dict)
+            # Try cache first if enabled
+            if cache_enabled and cache:
+                cached_user = cache.get(f"{cache_key_prefix}{current_user_email}")
+                if cached_user:
+                    return jsonify({"user": cached_user}), 200
+            
             user_dict = user_data_access.find_user_by_email(current_user_email)
             if not user_dict:
                 return jsonify({"error": "User not found"}), 404
@@ -271,8 +293,10 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                     "profile_picture": user_dict.get("profile_picture")
                 }
             
-            # Cache the user details only on successful retrieval
-            cache.set(f"user_{current_user_email}", user_details, timeout=300)  # Cache for 5 minutes
+            # Cache if enabled
+            if cache_enabled and cache:
+                cache.set(f"{cache_key_prefix}{current_user_email}", user_details, timeout=cache_timeout)
+            
             return jsonify({"user": user_details}), 200
             
         except Exception as e:
@@ -288,7 +312,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         current_user_email = get_jwt_identity()  # string (email)
         user_data = request.get_json()
         response = auth_manager.update_user_authsvc(current_user_email, user_data)
-        cache.delete(f"user_{current_user_email}")
+        if cache:
+            cache.delete(f"user_{current_user_email}")
         return response
     
     @authsvc.route('/confirm/<token>', methods=['GET'])
@@ -304,7 +329,7 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         if status_code == 200:
             response_data = response.get_json()
             user_email = response_data.get('user', {}).get('email')
-            if user_email:
+            if user_email and cache:
                 cache.delete(f"user_{user_email}")
         
         if isinstance(result, tuple):
@@ -411,7 +436,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
             })
     
             # Clear user cache
-            cache.delete(f"user_{current_user_email}")
+            if cache:
+                cache.delete(f"user_{current_user_email}")
     
             # Log the activity for security audit
             user_data_access.log_user_activity(user['id'], "Profile picture uploaded")

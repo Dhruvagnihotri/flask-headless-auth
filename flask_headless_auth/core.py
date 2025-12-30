@@ -33,6 +33,7 @@ class AuthSvc:
                  post_login_redirect_url=None,
                  url_prefix: Optional[str] = None,
                  blueprint_name: Optional[str] = None,
+                 cache_key_prefix: Optional[str] = None,
                  **kwargs):
         """
         Initialize the extension.
@@ -50,6 +51,8 @@ class AuthSvc:
             post_login_redirect_url: Default frontend URL for OAuth redirects (optional)
             url_prefix: URL prefix for routes (default: from config or '/api/auth')
             blueprint_name: Unique blueprint name (default: auto-generated from user table)
+            cache_key_prefix: Prefix for cache keys (default: 'user_'). 
+                              Use app-specific prefix in monorepo: 'brakit_user_', 'pdfwhiz_user_'
             **kwargs: Additional configuration options
         """
         self.app = None
@@ -74,6 +77,9 @@ class AuthSvc:
         # Store URL prefix and blueprint name (instance-level, not config-dependent)
         self.url_prefix = url_prefix
         self.blueprint_name = blueprint_name
+        
+        # Cache key prefix for monorepo support (avoids key collision between apps)
+        self.cache_key_prefix = cache_key_prefix or "user_"
         
         if app is not None:
             self.init_app(app, **kwargs)
@@ -372,7 +378,8 @@ class AuthSvc:
             cache=self.cache,  # Pass cache (can be None)
             email_manager=email_manager,
             blueprint_name=blueprint_name,
-            post_login_redirect_url=post_login_redirect_url
+            post_login_redirect_url=post_login_redirect_url,
+            cache_key_prefix=self.cache_key_prefix  # Monorepo support
         )
         app.register_blueprint(auth_bp, url_prefix=url_prefix)
         
