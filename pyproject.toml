@@ -4,39 +4,81 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-headless-auth"
-version = "0.1.3"
-description = "Modern, headless authentication for Flask APIs. JWT + OAuth + RBAC in one line."
+version = "0.1.5"
+description = "The easiest Flask authentication. One-line setup. JWT + OAuth + RBAC built-in. Works with React, Next.js, Vue, any frontend. Secure by default. Production-ready. Free alternative to Auth0/Clerk."
 readme = "README.md"
 authors = [
     { name = "Dhruv Agnihotri", email = "dagni@umich.edu" }
 ]
-license = "MIT"
+license = { text = "MIT" }
 requires-python = ">=3.8"
 classifiers = [
-    "Development Status :: 3 - Alpha",
+    "Development Status :: 4 - Beta",
     "Intended Audience :: Developers",
+    "License :: OSI Approved :: MIT License",
     "Programming Language :: Python :: 3",
     "Programming Language :: Python :: 3.8",
     "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
     "Framework :: Flask",
     "Topic :: Software Development :: Libraries :: Python Modules",
     "Topic :: Internet :: WWW/HTTP :: Session",
+    "Topic :: Security",
+    "Topic :: Software Development :: Libraries :: Application Frameworks",
+    "Environment :: Web Environment",
+    "Operating System :: OS Independent",
 ]
 keywords = [
     "flask",
+    "flask-auth",
+    "flask-authentication",
     "authentication",
+    "auth",
     "jwt",
+    "jwt-auth",
     "oauth",
+    "oauth2",
+    "google-oauth",
+    "microsoft-oauth",
     "api",
+    "api-auth",
+    "rest-api",
     "headless",
+    "headless-auth",
     "react",
-    "rbac",
-    "mfa",
+    "react-auth",
     "nextjs",
-    "spa"
+    "nextjs-auth",
+    "vue",
+    "spa",
+    "spa-auth",
+    "rbac",
+    "role-based-access-control",
+    "mfa",
+    "two-factor-auth",
+    "2fa",
+    "session-management",
+    "token-auth",
+    "access-token",
+    "refresh-token",
+    "httponly-cookies",
+    "secure-auth",
+    "password-reset",
+    "email-verification",
+    "user-management",
+    "flask-jwt-extended",
+    "flask-security",
+    "flask-login-alternative",
+    "auth0-alternative",
+    "clerk-alternative",
+    "supabase-alternative",
+    "security",
+    "backend-auth",
+    "microservices",
+    "production-ready"
 ]
 dependencies = [
     "Flask>=2.0.0",

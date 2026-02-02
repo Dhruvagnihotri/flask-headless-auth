@@ -85,7 +85,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         user = result['user']
     
         # Optional: Check if Multi-Factor Authentication (MFA) is enabled
-        if user["mfa_enabled"]:
+        # Use .get() for safety (schema validation at startup ensures field exists)
+        if user.get("mfa_enabled", False):
             return jsonify({'message': 'MFA token sent to your registered contact'}), 200
     
         # Generate tokens and set them as HttpOnly cookies

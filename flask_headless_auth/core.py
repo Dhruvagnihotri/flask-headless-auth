@@ -167,6 +167,10 @@ class AuthSvc:
         self.user_activity_log_model = self.user_activity_log_model or default_user_activity_log
         self.oauth_token_model = self.oauth_token_model or default_oauth_token
         
+        # Validate user model schema (industry best practice: fail fast at startup)
+        if self._custom_models['user']:
+            self._validate_user_model_schema()
+        
         if self._custom_models['user'] or self._custom_models['role']:
             logger.info(f"Using custom models: {', '.join([k for k,v in self._custom_models.items() if v])}")
         else:
@@ -385,4 +389,65 @@ class AuthSvc:
         
         logger.info(f"Auth routes registered at {url_prefix} (blueprint: {blueprint_name})")
         logger.info(f"OAuth post-login redirect URL: {post_login_redirect_url}")
+    
+    def _validate_user_model_schema(self):
+        """
+        Validate that custom User model has all required fields.
+        
+        This is an industry best practice: fail fast at startup with clear error messages
+        rather than cryptic runtime KeyErrors in production.
+        
+        Raises:
+            ValueError: If required fields are missing with helpful error message
+        """
+        required_fields = {
+            # Core auth fields (CRITICAL)
+            'id': 'Integer primary key',
+            'email': 'String(255), unique, indexed',
+            'password_hash': 'String(1024)',
+            
+            # Auth flags (CRITICAL - used in login flow)
+            'is_verified': 'Boolean, default=False',
+            'is_active': 'Boolean, default=True',
+            'mfa_enabled': 'Boolean, default=False',  # Used in routes/auth.py:88
+            
+            # Provider field (CRITICAL - used for OAuth)
+            'provider': 'String(50), default="local"',
+        }
+        
+        missing_fields = []
+        for field_name, field_desc in required_fields.items():
+            if not hasattr(self.user_model, field_name):
+                missing_fields.append(f"  - {field_name}: {field_desc}")
+        
+        if missing_fields:
+            table_name = getattr(self.user_model, '__tablename__', 'unknown')
+            error_msg = (
+                f"\n\n{'='*80}\n"
+                f"❌ USER MODEL SCHEMA VALIDATION FAILED\n"
+                f"{'='*80}\n\n"
+                f"Your custom User model '{self.user_model.__name__}' (table: '{table_name}')\n"
+                f"is missing required fields:\n\n"
+                f"{chr(10).join(missing_fields)}\n\n"
+                f"These fields are required by flask-headless-auth and MUST be added to your model.\n\n"
+                f"Example fix:\n\n"
+                f"class {self.user_model.__name__}(db.Model, UserMixin):\n"
+                f"    __tablename__ = '{table_name}'\n\n"
+                f"    # Core auth fields (REQUIRED)\n"
+                f"    id = db.Column(db.Integer, primary_key=True)\n"
+                f"    email = db.Column(db.String(255), unique=True, nullable=False, index=True)\n"
+                f"    password_hash = db.Column(db.String(1024))\n\n"
+                f"    # Auth flags (REQUIRED)\n"
+                f"    is_verified = db.Column(db.Boolean, nullable=False, default=False)\n"
+                f"    is_active = db.Column(db.Boolean, nullable=False, default=True)\n"
+                f"    mfa_enabled = db.Column(db.Boolean, nullable=False, default=False)\n\n"
+                f"    # Provider (REQUIRED for OAuth)\n"
+                f"    provider = db.Column(db.String(50), nullable=False, default='local')\n\n"
+                f"    # ... your custom fields ...\n\n"
+                f"After adding these fields, run database migration:\n"
+                f"  ALTER TABLE {table_name} ADD COLUMN <field_name> <field_type>;\n\n"
+                f"Documentation: https://github.com/Dhruvagnihotri/flask-headless-auth#schema\n"
+                f"{'='*80}\n"
+            )
+            raise ValueError(error_msg)
 
