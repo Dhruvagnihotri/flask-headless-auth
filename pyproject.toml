@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "flask-headless-auth"
-version = "0.1.6"
+version = "0.1.7"
 description = "🔐 Production-ready Flask auth in one line. 20+ routes (JWT, OAuth, MFA, RBAC) instantly. Works with React/Next.js/Vue. Self-hosted, secure by default. Free Auth0/Clerk alternative ($3,600/year saved). Perfect for SPAs."
 readme = "README.md"
 authors = [
