@@ -30,6 +30,8 @@ class AuthSvc:
                  blacklisted_token_model=None, mfa_token_model=None,
                  password_reset_token_model=None, user_activity_log_model=None,
                  oauth_token_model=None,
+                 # New audit models
+                 audit_log_model=None, user_session_model=None, activity_log_model=None,
                  post_login_redirect_url=None,
                  url_prefix: Optional[str] = None,
                  blueprint_name: Optional[str] = None,
@@ -61,6 +63,10 @@ class AuthSvc:
         self.cache = None
         self.limiter = None
         
+        # Auth lifecycle hooks (Supabase Auth Hooks parity)
+        from flask_headless_auth.managers.hooks_manager import HooksManager
+        self.hooks = HooksManager()
+        
         # Store model classes (will be set to defaults if None)
         self.user_model = user_model
         self.role_model = role_model
@@ -70,6 +76,11 @@ class AuthSvc:
         self.password_reset_token_model = password_reset_token_model
         self.user_activity_log_model = user_activity_log_model
         self.oauth_token_model = oauth_token_model
+        
+        # Audit models (new for enterprise features)
+        self.audit_log_model = audit_log_model
+        self.user_session_model = user_session_model
+        self.activity_log_model = activity_log_model
         
         # Store OAuth configuration
         self.post_login_redirect_url = post_login_redirect_url
@@ -151,11 +162,14 @@ class AuthSvc:
             self.db.init_app(app)
         
         # Always create default models, then override with custom ones
+        # Table prefix is configurable per app (e.g. 'mrscribe_', 'brakit_')
         from flask_headless_auth.default_models import create_default_models
+        table_prefix = app.config.get('AUTHSVC_TABLE_PREFIX', 'authsvc_')
         (default_user, default_role, default_permission,
          default_blacklisted_token, default_mfa_token,
          default_password_reset_token, default_user_activity_log,
-         default_oauth_token, _) = create_default_models(self.db)
+         default_oauth_token, default_audit_log, default_user_session,
+         default_activity_log, _) = create_default_models(self.db, table_prefix=table_prefix)
         
         # Use custom models where provided, defaults otherwise
         self.user_model = self.user_model or default_user
@@ -166,6 +180,11 @@ class AuthSvc:
         self.password_reset_token_model = self.password_reset_token_model or default_password_reset_token
         self.user_activity_log_model = self.user_activity_log_model or default_user_activity_log
         self.oauth_token_model = self.oauth_token_model or default_oauth_token
+        
+        # Audit models (new)
+        self.audit_log_model = self.audit_log_model or default_audit_log
+        self.user_session_model = self.user_session_model or default_user_session
+        self.activity_log_model = self.activity_log_model or default_activity_log
         
         # Validate user model schema (industry best practice: fail fast at startup)
         if self._custom_models['user']:
@@ -347,7 +366,7 @@ class AuthSvc:
         logger.info("OAuth providers initialized")
     
     def _init_routes(self, app):
-        """Register auth routes."""
+        """Register auth routes and RBAC routes."""
         from flask_headless_auth.routes import create_auth_blueprint
         
         # Priority: instance url_prefix > config > default
@@ -389,6 +408,84 @@ class AuthSvc:
         
         logger.info(f"Auth routes registered at {url_prefix} (blueprint: {blueprint_name})")
         logger.info(f"OAuth post-login redirect URL: {post_login_redirect_url}")
+        
+        # Register RBAC management routes (if RBAC is enabled)
+        if app.config.get('AUTHSVC_ENABLE_RBAC', True):
+            self._init_rbac_routes(app, blueprint_name)
+        
+        # Register audit and session management routes (if enabled)
+        if app.config.get('AUTHSVC_ENABLE_AUDIT', True):
+            self._init_audit_routes(app, blueprint_name)
+        
+        # Register admin user-management routes (if enabled)
+        if app.config.get('AUTHSVC_ENABLE_ADMIN', True):
+            self._init_admin_routes(app, blueprint_name)
+    
+    def _init_rbac_routes(self, app, base_blueprint_name):
+        """Register RBAC management routes."""
+        from flask_headless_auth.routes.rbac import create_rbac_blueprint
+        
+        rbac_url_prefix = app.config.get('AUTHSVC_RBAC_URL_PREFIX', '/api/rbac')
+        rbac_blueprint_name = f'{base_blueprint_name}_rbac'
+        
+        rbac_bp = create_rbac_blueprint(
+            role_model=self.role_model,
+            permission_model=self.permission_model,
+            user_model=self.user_model,
+            cache=self.cache,
+            blueprint_name=rbac_blueprint_name,
+        )
+        app.register_blueprint(rbac_bp, url_prefix=rbac_url_prefix)
+        
+        logger.info(f"RBAC routes registered at {rbac_url_prefix} (blueprint: {rbac_blueprint_name})")
+    
+    def _init_audit_routes(self, app, base_blueprint_name):
+        """Register audit and session management routes."""
+        from flask_headless_auth.managers.audit_manager import AuditManager
+        from flask_headless_auth.routes.audit import create_audit_blueprint
+        
+        # Create audit manager
+        self.audit_manager = AuditManager(
+            audit_log_model=self.audit_log_model,
+            user_session_model=self.user_session_model,
+            activity_log_model=self.activity_log_model
+        )
+        
+        audit_url_prefix = app.config.get('AUTHSVC_AUDIT_URL_PREFIX', '/api/audit')
+        audit_blueprint_name = f'{base_blueprint_name}_audit'
+        
+        audit_bp = create_audit_blueprint(
+            audit_manager=self.audit_manager,
+            blueprint_name=audit_blueprint_name
+        )
+        app.register_blueprint(audit_bp, url_prefix=audit_url_prefix)
+        
+        logger.info(f"Audit routes registered at {audit_url_prefix} (blueprint: {audit_blueprint_name})")
+    
+    def _init_admin_routes(self, app, base_blueprint_name):
+        """Register admin user-management routes (Clerk / Supabase pattern)."""
+        from flask_headless_auth.routes.admin import create_admin_blueprint
+        
+        # Ensure audit_manager exists (admin routes depend on it for sessions/logging)
+        if not hasattr(self, 'audit_manager'):
+            from flask_headless_auth.managers.audit_manager import AuditManager
+            self.audit_manager = AuditManager(
+                audit_log_model=self.audit_log_model,
+                user_session_model=self.user_session_model,
+                activity_log_model=self.activity_log_model
+            )
+        
+        admin_url_prefix = app.config.get('AUTHSVC_ADMIN_URL_PREFIX', '/api/admin')
+        admin_blueprint_name = f'{base_blueprint_name}_admin'
+        
+        admin_bp = create_admin_blueprint(
+            user_model=self.user_model,
+            audit_manager=self.audit_manager,
+            blueprint_name=admin_blueprint_name,
+        )
+        app.register_blueprint(admin_bp, url_prefix=admin_url_prefix)
+        
+        logger.info(f"Admin routes registered at {admin_url_prefix} (blueprint: {admin_blueprint_name})")
     
     def _validate_user_model_schema(self):
         """
@@ -450,4 +547,55 @@ class AuthSvc:
                 f"{'='*80}\n"
             )
             raise ValueError(error_msg)
+
+    # ==================================================================
+    # AUTH LIFECYCLE HOOKS (Supabase Auth Hooks parity)
+    # ==================================================================
+
+    def hook(self, hook_name):
+        """
+        Decorator to register an auth lifecycle hook.
+
+        Available hooks:
+            before_signup, after_signup, before_login, after_login,
+            before_logout, after_logout, custom_access_token,
+            before_token_refresh, after_token_refresh,
+            before_password_change, after_password_change,
+            before_mfa_verify, after_mfa_verify,
+            on_oauth_login, before_role_assign, after_role_assign
+
+        Usage::
+
+            auth = AuthSvc()
+
+            @auth.hook('before_signup')
+            def validate_email_domain(user_data):
+                if not user_data['email'].endswith('@company.com'):
+                    raise ValueError('Only company emails allowed')
+
+            @auth.hook('custom_access_token')
+            def add_org_claims(user, claims):
+                claims['tenant_id'] = lookup_tenant(user['id'])
+                return claims
+
+        Args:
+            hook_name: One of the supported hook names
+
+        Returns:
+            Decorator function
+        """
+        def decorator(fn):
+            self.hooks.register(hook_name, fn)
+            return fn
+        return decorator
+
+    def on(self, hook_name, fn):
+        """
+        Programmatic hook registration (non-decorator style).
+
+        Usage::
+            auth.on('after_login', my_callback)
+        """
+        self.hooks.register(hook_name, fn)
+        return self
 

@@ -15,6 +15,26 @@ DEFAULT_CONFIG = {
     'AUTHSVC_ENABLE_MFA': True,
     'AUTHSVC_ENABLE_RBAC': True,
     
+    # RBAC settings
+    'AUTHSVC_RBAC_URL_PREFIX': '/api/rbac',       # URL prefix for RBAC management routes
+    'AUTHSVC_RBAC_ADMIN_ROLE': 'admin',             # Role name with full RBAC management access
+    'AUTHSVC_RBAC_ADMIN_PERMISSION': 'rbac.admin',  # Permission for RBAC management access
+    'AUTHSVC_CACHE_PERMISSIONS': True,               # Cache permission lookups for performance
+    'AUTHSVC_PERMISSION_CACHE_TTL': 300,             # Cache TTL in seconds (5 min default)
+    
+    # Admin user-management (Clerk / Supabase pattern)
+    'AUTHSVC_ENABLE_ADMIN': True,                    # Enable admin user-management routes
+    'AUTHSVC_ADMIN_URL_PREFIX': '/api/admin',        # URL prefix for admin routes
+    
+    # Audit & Session Management (Supabase parity)
+    'AUTHSVC_ENABLE_AUDIT': True,                    # Enable audit logging and session tracking
+    'AUTHSVC_AUDIT_URL_PREFIX': '/api/audit',        # URL prefix for audit routes
+    'AUTHSVC_SESSION_TIMEOUT_MINUTES': None,         # Session timeout (None = no timeout)
+    'AUTHSVC_SINGLE_SESSION_PER_USER': False,        # Enforce single session per user (Supabase Pro feature)
+    'AUTHSVC_SESSION_INACTIVITY_TIMEOUT': None,      # Inactivity timeout in minutes
+    'AUTHSVC_MAX_LOGIN_ATTEMPTS': 5,                 # Max failed login attempts before blocking
+    'AUTHSVC_LOGIN_ATTEMPT_WINDOW': 30,              # Time window for login attempts (minutes)
+    
     # Token Delivery Configuration
     # Options: 'cookies_only' (most secure), 'body_only' (APIs), 'dual' (flexible)
     'AUTHSVC_TOKEN_DELIVERY': 'cookies_only',  # Industry standard: secure by default

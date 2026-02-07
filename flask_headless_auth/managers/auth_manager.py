@@ -37,7 +37,9 @@ class AuthManager:
             user = result['user']
             
             # Generate tokens using dual-delivery pattern (body + cookies)
-            token_response = self.token_manager.generate_token_and_set_cookies(user)
+            # Pass signup action so the auto-created session is logged correctly
+            token_response = self.token_manager.generate_token_and_set_cookies(
+                user, audit_action='user.signup')
             logger.debug("Token response generated with dual-delivery")
             
             # Get the response data and merge with registration message
@@ -67,8 +69,9 @@ class AuthManager:
     def login_user_authsvc(self, user_data):
         return self.user_manager.login_user(user_data)
 
-    def generate_token_and_set_cookies(self, user):
-        return self.token_manager.generate_token_and_set_cookies(user)
+    def generate_token_and_set_cookies(self, user, audit_action=None):
+        return self.token_manager.generate_token_and_set_cookies(
+            user, audit_action=audit_action)
     
     def generate_token_and_redirect(self, user, redirect_uri):
         return self.token_manager.generate_token_and_redirect(user, redirect_uri)

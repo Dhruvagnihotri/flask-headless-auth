@@ -145,7 +145,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     
         # Verify MFA token
         if auth_manager.verify_mfa_authsvc(user, token):
-            return auth_manager.generate_token_and_set_cookies(user)
+            return auth_manager.generate_token_and_set_cookies(
+                user, audit_action='user.mfa_verified')
         else:
             return jsonify({'error': 'Invalid MFA token'}), 400
     
@@ -294,6 +295,17 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                     "profile_picture": user_dict.get("profile_picture")
                 }
             
+            # Auto-resolve role_name if role_id is present but role_name is missing
+            if user_details.get('role_id') and not user_details.get('role_name'):
+                try:
+                    authsvc = current_app.extensions.get('authsvc')
+                    if authsvc and hasattr(authsvc, 'role_model'):
+                        role_obj = authsvc.role_model.query.get(user_details['role_id'])
+                        if role_obj:
+                            user_details['role_name'] = role_obj.name
+                except Exception:
+                    pass  # Non-critical — role_name is a convenience field
+
             # Cache if enabled
             if cache_enabled and cache:
                 cache.set(f"{cache_key_prefix}{current_user_email}", user_details, timeout=cache_timeout)
