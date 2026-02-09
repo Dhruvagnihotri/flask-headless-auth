@@ -283,6 +283,7 @@ class AuditManager:
             except Exception:
                 pass
 
+            now = datetime.utcnow()
             session = self.UserSession(
                 session_id=sid,
                 user_id=user_id,
@@ -293,6 +294,8 @@ class AuditManager:
                 device_fingerprint=_device_fingerprint(ua, ip),
                 expires_at=expires_at,
                 tenant_id=tenant_id,
+                created_at=now,  # Explicitly set instead of relying on DB default
+                last_activity=now,  # Explicitly set to prevent NULL bugs
             )
             self.db.session.add(session)
             self.db.session.commit()
@@ -333,7 +336,10 @@ class AuditManager:
                     'AUTHSVC_SESSION_INACTIVITY_TIMEOUT')
                 if inactivity_minutes:
                     cutoff = now - timedelta(minutes=int(inactivity_minutes))
-                    if session.last_activity < cutoff:
+                    # Handle NULL last_activity (shouldn't happen but defensive)
+                    if session.last_activity is None:
+                        session.last_activity = now  # Treat as just created
+                    elif session.last_activity < cutoff:
                         # Session has been idle too long -- revoke it
                         session.is_active = False
                         session.revoked = True
