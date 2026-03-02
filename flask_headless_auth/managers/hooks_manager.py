@@ -89,8 +89,12 @@ class HooksManager:
         'on_oauth_login',
     })
 
-    # Email hooks — the app sends the actual emails; the library fires
-    # these with (user_dict, token). The app builds URLs itself.
+    # Email hooks — the app sends the actual emails.
+    # send_verification_email:      (user_dict, token)
+    # send_password_reset_email:    (user_dict, token, redirect_url|None)
+    #   redirect_url is passed through as-is from the request.
+    #   The consuming app should validate it (e.g. against an allowlist).
+    # send_welcome_email:           (user_dict)
     EMAIL_HOOKS = frozenset({
         'send_verification_email',
         'send_password_reset_email',

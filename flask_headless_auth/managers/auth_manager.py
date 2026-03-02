@@ -99,8 +99,8 @@ class AuthManager:
         return self.oauth_manager.microsoft_callback()
 
     # Password reset is still a user-related task
-    def request_password_reset_authsvc(self, email):
-        return self.user_manager.request_password_reset(email)
+    def request_password_reset_authsvc(self, email, redirect_url=None):
+        return self.user_manager.request_password_reset(email, redirect_url=redirect_url)
 
     def reset_password_authsvc(self, token, new_password):
         return self.user_manager.reset_password(token, new_password)

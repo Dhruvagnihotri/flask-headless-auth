@@ -367,7 +367,7 @@ class UserManager:
             'require_verification': require_verification
         }
 
-    def request_password_reset(self, email):
+    def request_password_reset(self, email, redirect_url=None):
         user = self.user_data_access.find_user_by_email(email)
         if not user:
             # Return same message to prevent email enumeration
@@ -377,14 +377,15 @@ class UserManager:
         expires_at = datetime.utcnow() + timedelta(hours=1)
         self.user_data_access.create_password_reset_token(user['id'], token, expires_at)
 
-        # Fire send_password_reset_email hook (app handles actual delivery).
-        # The hook receives (user_dict, token).  The consuming app builds
-        # the full reset URL itself — the library never constructs frontend
-        # URLs (prevents Origin-header spoofing on this unauth endpoint).
+        # Fire send_password_reset_email hook.
+        # Signature: (user_dict, token, redirect_url)
+        #   redirect_url is passed through as-is from the route.
+        #   The consuming app is responsible for validating it
+        #   (e.g. against an allowlist) before using it.
         hooks = self._get_hooks()
         if hooks and hooks.has_hooks('send_password_reset_email'):
             try:
-                hooks.fire('send_password_reset_email', user, token)
+                hooks.fire('send_password_reset_email', user, token, redirect_url)
                 logger.info(f"send_password_reset_email hook fired for user {user['id']}")
             except Exception as e:
                 logger.warning(f"send_password_reset_email hook failed (non-fatal): {e}")

@@ -65,6 +65,9 @@ from .managers.audit_manager import (
 # Export Hooks manager
 from .managers.hooks_manager import HooksManager
 
+# Export utilities
+from .utils.redirect import validate_redirect_url
+
 # Export db for convenience
 from .extensions import db
 
@@ -100,6 +103,9 @@ __all__ = [
     
     # Hooks
     'HooksManager',
+    
+    # Utilities
+    'validate_redirect_url',
     
     # Version
     '__version__',

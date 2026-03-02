@@ -152,7 +152,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     def request_password_reset_authsvc():
         data = request.get_json()
         email = data.get('email')
-        return auth_manager.request_password_reset_authsvc(email)
+        redirect_url = data.get('redirect_url')  # Frontend-supplied URL (validated against allowlist)
+        return auth_manager.request_password_reset_authsvc(email, redirect_url=redirect_url)
 
     # Complete Password Reset (submit token + new password)
     @authsvc.route('/reset-password/<token>', methods=['POST'])

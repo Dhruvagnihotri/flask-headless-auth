@@ -5,6 +5,7 @@ flask_headless_auth.utils
 Utility functions and decorators.
 """
 
-# Placeholder for future utilities
-__all__ = []
+from .redirect import validate_redirect_url
+
+__all__ = ['validate_redirect_url']
 
