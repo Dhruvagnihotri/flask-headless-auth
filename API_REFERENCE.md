@@ -83,10 +83,8 @@ app.config['SECRET_KEY'] = 'your-secret-key-here'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'postgresql://localhost/mydb'
 app.config['JWT_SECRET_KEY'] = 'your-jwt-secret-here'
 
-# Optional email config for password reset/verification
-app.config['EMAIL_SERVICE'] = 'gmail'  # or 'brevo'
-app.config['MAIL_USERNAME'] = 'your-email@gmail.com'
-app.config['MAIL_PASSWORD'] = 'your-app-password'
+# Optional: Frontend URL for email verification/reset URLs (used by hooks)
+app.config['FRONTEND_URL'] = 'http://localhost:3000'
 
 db = SQLAlchemy(app)
 auth = FlaskHeadlessAuth(app, db)
@@ -2568,15 +2566,25 @@ app.config['RATELIMIT_DEFAULT'] = '50000 per day; 5000 per hour'
 
 **Email Settings:**
 ```python
-# Email Service: Gmail
-app.config['EMAIL_SERVICE'] = 'gmail'
-app.config['MAIL_USERNAME'] = 'your-email@gmail.com'
-app.config['MAIL_PASSWORD'] = 'your-app-password'
+# Email delivery is handled by your app via hooks (see Email Hooks section)
+# The library generates tokens and URLs — you send the emails
+app.config['FRONTEND_URL'] = 'https://yourapp.com'  # Used to build verification/reset URLs
+```
 
-# OR Email Service: Brevo
-app.config['EMAIL_SERVICE'] = 'brevo'
-app.config['BREVO_API_KEY'] = 'your-brevo-api-key'
-app.config['MAIL_DEFAULT_SENDER'] = 'noreply@myapp.com'
+**Email Hooks:**
+```python
+@auth.hook('send_verification_email')
+def send_verification(user, token, verification_url):
+    # Use any email service: SendGrid, SES, Resend, Postmark, etc.
+    send_email(to=user['email'], subject='Verify your email', body=verification_url)
+
+@auth.hook('send_password_reset_email')
+def send_reset(user, token, reset_url):
+    send_email(to=user['email'], subject='Reset your password', body=reset_url)
+
+@auth.hook('send_welcome_email')
+def send_welcome(user):
+    send_email(to=user['email'], subject='Welcome!', body='Thanks for signing up!')
 ```
 
 **OAuth Settings:**
@@ -3622,13 +3630,13 @@ def validate_email_domain(user_data):
     if not email.endswith('@mycompany.com'):
         raise ValueError('Only company emails allowed')
 
-# Send welcome email after signup
-@auth.hook('after_signup')
-def send_welcome_email(user):
+# Send welcome email after signup (dedicated hook)
+@auth.hook('send_welcome_email')
+def welcome_email(user):
     send_email(
-        to=user.email,
+        to=user['email'],
         subject='Welcome to MyApp!',
-        body=f'Hi {user.first_name}, welcome aboard!'
+        body=f'Hi {user.get("first_name", "")}, welcome aboard!'
     )
 
 # Log to analytics after login
@@ -3834,7 +3842,7 @@ def get_sensitive_data():
 - [ ] Set secure cookies (`JWT_COOKIE_SECURE = True`)
 - [ ] Configure CORS for specific origins
 - [ ] Set up Redis for caching (optional)
-- [ ] Configure email service (Gmail/Brevo)
+- [ ] Register email hooks (`send_verification_email`, `send_password_reset_email`)
 - [ ] Set up rate limiting
 - [ ] Enable audit logging (`AUTHSVC_ENABLE_AUDIT = True`)
 - [ ] Configure session timeouts

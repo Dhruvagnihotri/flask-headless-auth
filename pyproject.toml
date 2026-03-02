@@ -104,9 +104,6 @@ dev = [
     "black>=23.7.0",
     "flake8>=6.1.0",
 ]
-email = [
-    "brevo-python>=1.0.0",
-]
 
 [project.urls]
 Homepage = "https://github.com/Dhruvagnihotri/flask-headless-auth"

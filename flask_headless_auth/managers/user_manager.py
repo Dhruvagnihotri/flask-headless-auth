@@ -1,4 +1,4 @@
-from flask import jsonify, url_for, current_app, request
+from flask import jsonify, current_app, request
 from datetime import datetime, timedelta
 import uuid
 import logging
@@ -18,10 +18,9 @@ def _get_audit_manager():
     return None
 
 class UserManager:
-    def __init__(self, user_data_access: UserDataAccess, cache=None, email_manager=None):
+    def __init__(self, user_data_access: UserDataAccess, cache=None):
         self.user_data_access = user_data_access
         self.cache = cache  # Cache is optional
-        self.email_manager = email_manager
 
     # --- Internal: fire-and-forget audit logging ---
     @staticmethod
@@ -80,16 +79,28 @@ class UserManager:
         new_user = self.user_data_access.create_user(user_data)
         logger.info(f"Created user with ID: {new_user.get('id')}")
         
-        # Send verification email if email manager is configured
-        if self.email_manager:
+        # Fire send_verification_email hook (app handles actual delivery).
+        # The hook receives (user_dict, token).  The consuming app is
+        # responsible for building the full verification URL — the library
+        # never constructs frontend URLs (avoids Origin-header spoofing).
+        hooks = self._get_hooks()
+        if hooks and hooks.has_hooks('send_verification_email'):
             try:
-                email_sent = self.email_manager.send_verification_email(new_user['email'])
-                if email_sent:
-                    logger.info(f"Verification email sent to {new_user['email']}")
-                else:
-                    logger.warning(f"Failed to send verification email to {new_user['email']}")
+                from flask_headless_auth.managers.verification_token import generate_confirmation_token
+                token = generate_confirmation_token(new_user['email'])
+                hooks.fire('send_verification_email', new_user, token)
+                logger.info(f"send_verification_email hook fired for {new_user['email']}")
             except Exception as e:
-                logger.error(f"Error sending verification email: {e}")
+                logger.warning(f"send_verification_email hook failed (non-fatal): {e}")
+        else:
+            logger.info("No send_verification_email hook registered — skipping email")
+
+        # Fire send_welcome_email hook (optional, app handles delivery)
+        if hooks and hooks.has_hooks('send_welcome_email'):
+            try:
+                hooks.fire('send_welcome_email', new_user)
+            except Exception as e:
+                logger.warning(f"send_welcome_email hook failed (non-fatal): {e}")
 
         self.user_data_access.log_user_activity(new_user['id'], "User registered")
 
@@ -114,7 +125,7 @@ class UserManager:
         return result
 
     def confirm_email(self, token):
-        from flask_headless_auth.email_service.token import confirm_token
+        from flask_headless_auth.managers.verification_token import confirm_token
         email = confirm_token(token)
         if not email:
             return jsonify({
@@ -152,9 +163,6 @@ class UserManager:
             user_id=user['id'],
         )
 
-        # Generate login URL
-        login_url = f"{current_app.config['FRONTEND_URL']}/login"
-
         return jsonify({
             'success': True,
             'message': 'Email verified successfully.',
@@ -163,7 +171,6 @@ class UserManager:
                 'email': user['email'],
                 'is_verified': True
             },
-            'login_url': login_url
         }), 200
 
     def update_user(self, user_id, user_data):
@@ -363,11 +370,29 @@ class UserManager:
     def request_password_reset(self, email):
         user = self.user_data_access.find_user_by_email(email)
         if not user:
-            return jsonify({'error': 'User not found'}), 404
+            # Return same message to prevent email enumeration
+            return jsonify({'message': 'If an account exists, a reset link has been sent.'}), 200
 
         token = uuid.uuid4().hex
         expires_at = datetime.utcnow() + timedelta(hours=1)
         self.user_data_access.create_password_reset_token(user['id'], token, expires_at)
+
+        # Fire send_password_reset_email hook (app handles actual delivery).
+        # The hook receives (user_dict, token).  The consuming app builds
+        # the full reset URL itself — the library never constructs frontend
+        # URLs (prevents Origin-header spoofing on this unauth endpoint).
+        hooks = self._get_hooks()
+        if hooks and hooks.has_hooks('send_password_reset_email'):
+            try:
+                hooks.fire('send_password_reset_email', user, token)
+                logger.info(f"send_password_reset_email hook fired for user {user['id']}")
+            except Exception as e:
+                logger.warning(f"send_password_reset_email hook failed (non-fatal): {e}")
+        else:
+            logger.warning(
+                "No send_password_reset_email hook registered — "
+                "token created but no email will be sent"
+            )
 
         self.user_data_access.log_user_activity(user['id'], "Password reset requested")
 
@@ -377,4 +402,33 @@ class UserManager:
             user_id=user['id'],
         )
 
-        return jsonify({'message': 'Password reset link sent to your email'}), 200
+        return jsonify({'message': 'If an account exists, a reset link has been sent.'}), 200
+
+    def reset_password(self, token, new_password):
+        """
+        Complete the password reset: validate token, update password, invalidate token.
+        """
+        if not new_password or len(new_password) < 6:
+            return jsonify({'error': 'Password must be at least 6 characters'}), 400
+
+        user_id = self.user_data_access.verify_password_reset_token(token)
+        if not user_id:
+            return jsonify({
+                'error': 'Reset link is invalid or has expired.',
+                'error_code': 'INVALID_TOKEN'
+            }), 400
+
+        new_hash = self.user_data_access.set_password(new_password)
+        self.user_data_access.update_user(user_id, {'password_hash': new_hash})
+
+        self.user_data_access.invalidate_password_reset_token(token)
+
+        self.user_data_access.log_user_activity(user_id, "Password reset completed")
+
+        self._log_auth_event(
+            action='user.password_change',
+            user_id=user_id,
+            metadata={'method': 'reset_token'},
+        )
+
+        return jsonify({'message': 'Password has been reset successfully.'}), 200

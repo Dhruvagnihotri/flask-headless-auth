@@ -213,7 +213,13 @@ class SQLAlchemyUserRepository(UserDataAccess):
         if reset_token:
             return reset_token.user_id
         return None
-    
+
+    def invalidate_password_reset_token(self, token: str, commit: bool = True) -> None:
+        """Delete a password reset token so it cannot be reused."""
+        self.PasswordResetToken.query.filter_by(token=token).delete()
+        if commit:
+            self.db.session.commit()
+
     def log_user_activity(self, user_id: int, activity: str, commit: bool = True) -> None:
         """
         Log user activity.

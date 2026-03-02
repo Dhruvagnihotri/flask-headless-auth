@@ -503,10 +503,8 @@ app.config.update(
     AUTHSVC_FORCE_HTTPS=True,
     AUTHSVC_CORS_ORIGINS=['https://app.com'],
     
-    # Email
-    EMAIL_SERVICE='gmail',                 # or 'brevo'
-    MAIL_USERNAME='email@gmail.com',
-    MAIL_PASSWORD='app-password',
+    # Email (deliver via hooks — app registers send_verification_email, send_password_reset_email hooks)
+    FRONTEND_URL='https://app.com',
     
     # OAuth
     GOOGLE_CLIENT_ID='...',

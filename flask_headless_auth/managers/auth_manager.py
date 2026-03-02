@@ -9,17 +9,16 @@ logger = logging.getLogger(__name__)
 
 
 class AuthManager:
-    def __init__(self, user_data_access: UserDataAccess, cache=None, email_manager=None,
+    def __init__(self, user_data_access: UserDataAccess, cache=None,
                  blueprint_name='authsvc', post_login_redirect_url='http://localhost:3000'):
         self.cache = cache  # Cache is optional
-        self.user_manager = UserManager(user_data_access, cache=cache, email_manager=email_manager)
+        self.user_manager = UserManager(user_data_access, cache=cache)
         self.token_manager = TokenManager(user_data_access)
         self.oauth_manager = OAuthManager(
             user_data_access, 
             blueprint_name=blueprint_name,
             post_login_redirect_url=post_login_redirect_url
         )
-        self.email_manager = email_manager
 
     # User registration and updates are delegated to the user manager
     def register_user_authsvc(self, user_data):
@@ -99,9 +98,12 @@ class AuthManager:
     def microsoft_callback_authsvc(self):
         return self.oauth_manager.microsoft_callback()
 
-    # Password reset request is still a user-related task
+    # Password reset is still a user-related task
     def request_password_reset_authsvc(self, email):
         return self.user_manager.request_password_reset(email)
-    
+
+    def reset_password_authsvc(self, token, new_password):
+        return self.user_manager.reset_password(token, new_password)
+
     def confirm_email(self, token):
         return self.user_manager.confirm_email(token)

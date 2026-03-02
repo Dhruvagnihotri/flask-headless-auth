@@ -191,12 +191,8 @@ class Config:
     GOOGLE_CLIENT_ID = 'your-google-client-id'
     GOOGLE_CLIENT_SECRET = 'your-google-client-secret'
     
-    # Email (for verification, password reset)
-    MAIL_SERVER = 'smtp.gmail.com'
-    MAIL_PORT = 587
-    MAIL_USE_TLS = True
-    MAIL_USERNAME = 'your-email@gmail.com'
-    MAIL_PASSWORD = 'your-app-password'
+    # Email (deliver via hooks — register send_verification_email, send_password_reset_email hooks)
+    FRONTEND_URL = 'https://yourapp.com'
     
     # Cache (optional, for performance)
     CACHE_TYPE = 'redis'

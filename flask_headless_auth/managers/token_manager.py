@@ -55,12 +55,12 @@ class TokenManager:
     # ------------------------------------------------------------------
 
     def generate_token_authsvc(self, user, additional_claims=None,
-                               audit_action=None):
+                               audit_action=None, reuse_session_id=None):
         """
         Generate access + refresh tokens for a user.
 
         Automatically:
-        1. Creates a session row in authsvc_user_sessions
+        1. Creates a session row in authsvc_user_sessions (unless reuse_session_id is provided)
         2. Logs the auth event in authsvc_audit_log_entries
         3. Embeds session_id in JWT claims (for session tracking)
         4. Enforces single-session policy if configured
@@ -69,6 +69,7 @@ class TokenManager:
             user: User dict with id, email, role_id, etc.
             additional_claims: Extra JWT claims dict
             audit_action: Override audit action string (auto-detected if None)
+            reuse_session_id: If provided, reuse existing session instead of creating new one (for token refresh)
         """
         logger.debug(f"Generating token for user ID: {user.get('id')}")
         identity = user['email']
@@ -89,13 +90,16 @@ class TokenManager:
             except Exception as e:
                 logger.warning(f"Could not resolve role details for JWT: {e}")
 
-        # ------- Session creation (automatic) -------
+        # ------- Session creation or reuse -------
         session_id = None
+        placeholder_jti = None
         audit_mgr = _get_audit_manager()
-        if audit_mgr:
-            # Create a placeholder JTI so we can create the session first
-            # (flask-jwt-extended generates the real JTI, but we need the
-            #  session_id BEFORE we create the token so it's in the claims)
+        
+        if reuse_session_id:
+            # Token refresh: reuse existing session
+            session_id = reuse_session_id
+        elif audit_mgr:
+            # New login: create a new session
             import uuid
             placeholder_jti = str(uuid.uuid4())
             session_id = audit_mgr.create_session(
@@ -277,32 +281,38 @@ class TokenManager:
             except Exception:
                 pass
 
-        # Generate new tokens but DON'T create new session (would break session tracking)
-        # Instead, we'll update the existing session's JTI after token generation
+        # Get existing session_id from current JWT to reuse it
         old_session_id = None
+        old_jti = None
         if audit_mgr:
             try:
                 claims = get_jwt()
                 old_session_id = claims.get('session_id')
+                old_jti = claims.get('jti')
             except Exception:
                 pass
         
-        tokens = self.generate_token_authsvc(user, audit_action='token.refresh')
+        # Generate new tokens while REUSING the existing session (prevents duplicate session creation)
+        tokens = self.generate_token_authsvc(
+            user, 
+            audit_action='token.refresh',
+            reuse_session_id=old_session_id  # KEY FIX: Reuse session instead of creating new one
+        )
         
-        # Update existing session with new refresh token's JTI (prevents session bloat)
+        # Update the session's JTI with the new refresh token's JTI
         if audit_mgr and old_session_id:
             try:
                 decoded_refresh = decode_token(tokens['refresh_token'])
                 new_jti = decoded_refresh.get('jti')
-                if new_jti:
-                    # Update the existing session's JTI (don't create new session)
+                if new_jti and old_jti:
+                    # Update existing session with new JTI
                     session_record = audit_mgr.UserSession.query.filter_by(
-                        session_id=old_session_id, revoked=False).first()
+                        jti=old_jti, revoked=False).first()
                     if session_record:
                         session_record.jti = new_jti
                         session_record.last_activity = datetime.utcnow()
                         audit_mgr.db.session.commit()
-                        logger.debug(f'Updated session {old_session_id} with new JTI on refresh')
+                        logger.debug(f'Updated session {old_session_id} JTI from {old_jti} to {new_jti}')
             except Exception as exc:
                 logger.warning(f'Failed to update session JTI on refresh: {exc}')
         

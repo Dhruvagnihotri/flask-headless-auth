@@ -143,7 +143,7 @@ npm install @headlesskits/react-headless-auth
 ### 🚀 Advanced
 - ✅ **RBAC** - Role-based access control
 - ✅ **Caching** - Redis/SimpleCache support
-- ✅ **Email Services** - Gmail, Brevo, custom
+- ✅ **Email Hooks** - Bring your own email provider via hooks
 - ✅ **Extensible** - Custom models, hooks
 - ✅ **Production-Ready** - Used in real apps
 
@@ -155,11 +155,7 @@ npm install @headlesskits/react-headless-auth
 pip install flask-headless-auth
 ```
 
-### Optional: Email support
-
-```bash
-pip install flask-headless-auth[email]
-```
+Email delivery is handled by your app via hooks — use any provider (SendGrid, SES, Resend, Postmark, etc.).
 
 ---
 
@@ -334,13 +330,8 @@ class Config:
     MICROSOFT_CLIENT_ID = os.getenv('MICROSOFT_CLIENT_ID')
     MICROSOFT_CLIENT_SECRET = os.getenv('MICROSOFT_CLIENT_SECRET')
     
-    # Email Service (optional - for verification, password reset)
-    EMAIL_SERVICE = 'gmail'  # or 'brevo'
-    MAIL_SERVER = 'smtp.gmail.com'
-    MAIL_PORT = 587
-    MAIL_USE_TLS = True
-    MAIL_USERNAME = os.getenv('MAIL_USERNAME')
-    MAIL_PASSWORD = os.getenv('MAIL_PASSWORD')
+    # Email (handled by your app via hooks - see Email Hooks section)
+    FRONTEND_URL = 'https://yourapp.com'  # Used to build verification/reset URLs
     
     # Cache (optional - for performance)
     CACHE_TYPE = 'redis'

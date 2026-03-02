@@ -252,19 +252,27 @@ app.config['POST_LOGIN_REDIRECT_URL'] = 'http://localhost:3000/dashboard'
 
 ## 📧 Email Verification
 
-```bash
-pip install flask-headless-auth[email]
-```
+Email delivery is handled by your app via hooks — use any email provider:
 
 ```python
-# Gmail
-app.config['EMAIL_SERVICE'] = 'gmail'
-app.config['MAIL_USERNAME'] = 'your-email@gmail.com'
-app.config['MAIL_PASSWORD'] = 'your-app-password'
+app.config['FRONTEND_URL'] = 'http://localhost:3000'
 
-# Or Brevo
-app.config['EMAIL_SERVICE'] = 'brevo'
-app.config['BREVO_API_KEY'] = 'your-brevo-api-key'
+@auth.hook('send_verification_email')
+def send_verification(user, token, verification_url):
+    # Use SendGrid, SES, Resend, Postmark, or any email service
+    send_email(
+        to=user['email'],
+        subject='Verify your email',
+        body=f'Click here to verify: {verification_url}'
+    )
+
+@auth.hook('send_password_reset_email')
+def send_reset(user, token, reset_url):
+    send_email(
+        to=user['email'],
+        subject='Reset your password',
+        body=f'Click here to reset: {reset_url}'
+    )
 ```
 
 Now users automatically get verification emails on signup!

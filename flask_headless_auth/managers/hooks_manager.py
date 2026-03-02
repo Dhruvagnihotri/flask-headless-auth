@@ -47,10 +47,14 @@ Available hooks:
     on_oauth_login      (user, provider)     -> user (can modify)
     before_role_assign  (user_id, role_id)   -> None | raise ValueError
     after_role_assign   (user_id, role_id)   -> None
+
+    Email hooks (app provides the email delivery):
+    send_verification_email  (user, token) -> None
+    send_password_reset_email(user, token) -> None
+    send_welcome_email       (user)        -> None
 """
 
 import logging
-from functools import wraps
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +89,14 @@ class HooksManager:
         'on_oauth_login',
     })
 
+    # Email hooks — the app sends the actual emails; the library fires
+    # these with (user_dict, token). The app builds URLs itself.
+    EMAIL_HOOKS = frozenset({
+        'send_verification_email',
+        'send_password_reset_email',
+        'send_welcome_email',
+    })
+
     ALL_HOOKS = frozenset({
         'before_signup', 'after_signup',
         'before_login', 'after_login',
@@ -95,6 +107,10 @@ class HooksManager:
         'before_mfa_verify', 'after_mfa_verify',
         'on_oauth_login',
         'before_role_assign', 'after_role_assign',
+        # Email hooks (delivery delegated to the consuming app)
+        'send_verification_email',
+        'send_password_reset_email',
+        'send_welcome_email',
     })
 
     def __init__(self):

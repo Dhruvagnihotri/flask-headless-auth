@@ -10,7 +10,6 @@ from flask import Blueprint, request, jsonify, make_response, Response, current_
 from flask_jwt_extended import jwt_required, get_jwt_identity, unset_jwt_cookies, get_jwt
 from flask_headless_auth.managers import AuthManager
 from flask_headless_auth.data_access import SQLAlchemyUserRepository
-from flask_headless_auth.extensions import get_cache
 
 # Initialize logger
 logger = logging.getLogger(__name__)
@@ -26,7 +25,7 @@ DEFAULT_CACHE_KEY_PREFIX = "user_"
 
 def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                           password_reset_token_model, user_activity_log_model,
-                          cache=None, email_manager=None, blueprint_name='authsvc',
+                          cache=None, blueprint_name='authsvc',
                           post_login_redirect_url='http://localhost:3000',
                           cache_key_prefix=None):
     """
@@ -39,7 +38,6 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         password_reset_token_model: PasswordResetToken model class
         user_activity_log_model: UserActivityLog model class
         cache: Optional cache instance for performance optimization
-        email_manager: Optional email manager instance
         blueprint_name: Name for the blueprint
         post_login_redirect_url: Default frontend URL for OAuth redirects
         cache_key_prefix: Prefix for cache keys (default: 'user_'). 
@@ -62,7 +60,6 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     auth_manager = AuthManager(
         user_data_access, 
         cache=cache, 
-        email_manager=email_manager,
         blueprint_name=blueprint_name,
         post_login_redirect_url=post_login_redirect_url
     )
@@ -156,7 +153,16 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         data = request.get_json()
         email = data.get('email')
         return auth_manager.request_password_reset_authsvc(email)
-    
+
+    # Complete Password Reset (submit token + new password)
+    @authsvc.route('/reset-password/<token>', methods=['POST'])
+    def reset_password_authsvc(token):
+        data = request.get_json()
+        new_password = data.get('password')
+        if not new_password:
+            return jsonify({'error': 'New password is required'}), 400
+        return auth_manager.reset_password_authsvc(token, new_password)
+
     # Access Protected Route
     @authsvc.route('/protected', methods=['GET'])
     @jwt_required()
@@ -353,19 +359,25 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     @authsvc.route('/resend-verification-email', methods=['POST'])
     @jwt_required()
     def resend_verification_email():
-        # Send verification email
-        current_user_email = get_jwt_identity()  # string (email)
+        current_user_email = get_jwt_identity()
         user = user_data_access.find_user_by_email(current_user_email)
         if not user:
             return jsonify({'error': 'User not found'}), 404
         if user['is_verified']:
             return jsonify({'message': 'User is already verified'}), 200
         try:
-            auth_manager.user_manager.email_manager.send_verification_email(user['email'])
-            user_data_access.log_user_activity(user['id'], "Verification email resent")
-            return jsonify({'message': 'Verification email sent successfully'}), 200
+            authsvc_ext = current_app.extensions.get('authsvc')
+            hooks = authsvc_ext.hooks if authsvc_ext else None
+            if hooks and hooks.has_hooks('send_verification_email'):
+                from flask_headless_auth.managers.verification_token import generate_confirmation_token
+                token = generate_confirmation_token(user['email'])
+                hooks.fire('send_verification_email', user, token)
+                user_data_access.log_user_activity(user['id'], "Verification email resent")
+                return jsonify({'message': 'Verification email sent successfully'}), 200
+            else:
+                return jsonify({'error': 'Email sending not configured. Register a send_verification_email hook.'}), 501
         except Exception as e:
-            print(f"Error sending verification email: {e}")
+            logger.error(f"Error sending verification email: {e}")
             return jsonify({'error': 'Failed to send verification email'}), 500
     
     # Upload Profile Picture

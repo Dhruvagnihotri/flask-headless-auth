@@ -72,7 +72,12 @@ class UserDataAccess(ABC):
     def verify_password_reset_token(self, token: str) -> Optional[int]:
         """Verify password reset token and return user_id."""
         pass
-    
+
+    @abstractmethod
+    def invalidate_password_reset_token(self, token: str) -> None:
+        """Delete/invalidate a password reset token after use."""
+        pass
+
     @abstractmethod
     def log_user_activity(self, user_id: int, activity: str) -> None:
         """Log user activity."""

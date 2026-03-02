@@ -37,10 +37,8 @@ app.config['SECRET_KEY'] = 'your-secret-key-change-in-production'
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///app.db'  # or PostgreSQL
 app.config['JWT_SECRET_KEY'] = 'your-jwt-secret-change-in-production'
 
-# Optional: Email config (for password reset/verification)
-app.config['EMAIL_SERVICE'] = 'gmail'
-app.config['MAIL_USERNAME'] = 'your-email@gmail.com'
-app.config['MAIL_PASSWORD'] = 'your-app-password'
+# Optional: Frontend URL (used for email verification/reset URLs in hooks)
+app.config['FRONTEND_URL'] = 'http://localhost:3000'
 
 # Initialize database and auth
 db = SQLAlchemy(app)
@@ -457,9 +455,8 @@ app.config.update(
     JWT_REFRESH_TOKEN_EXPIRES=2592000,   # 30 days
     AUTHSVC_SESSION_INACTIVITY_TIMEOUT=30,  # 30 min
     
-    # Email
-    EMAIL_SERVICE='brevo',
-    BREVO_API_KEY=os.getenv('BREVO_API_KEY'),
+    # Email (deliver via hooks — see Email Hooks section)
+    FRONTEND_URL='https://myapp.com',
     
     # Rate Limiting
     RATELIMIT_ENABLED=True,

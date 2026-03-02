@@ -127,7 +127,6 @@ class AuthSvc:
         self._init_limiter(app)
         self._init_cors(app)
         self._init_security(app)
-        self._init_email(app)
         self._init_oauth(app, **kwargs)
         self._init_routes(app)
         
@@ -325,36 +324,6 @@ class AuthSvc:
         if app.config.get('WTF_CSRF_ENABLED', False):
             CSRFProtect(app)
     
-    def _init_email(self, app):
-        """Initialize email service if configured."""
-        email_service = app.config.get('EMAIL_SERVICE')
-        
-        if not email_service:
-            logger.info("Email service not configured - email verification disabled")
-            return
-        
-        try:
-            from flask_headless_auth.email_service import EmailManager
-            
-            if email_service == 'brevo':
-                if not app.config.get('BREVO_API_KEY'):
-                    logger.warning("BREVO_API_KEY not configured - email verification disabled")
-                    return
-            elif email_service == 'gmail':
-                if not (app.config.get('MAIL_USERNAME') and app.config.get('MAIL_PASSWORD')):
-                    logger.warning("MAIL_USERNAME/MAIL_PASSWORD not configured - email verification disabled")
-                    return
-            
-            email_manager = EmailManager(service_name=email_service, config=app.config)
-            app.email_manager = email_manager
-            logger.info(f"✅ Email service initialized: {email_service}")
-            
-        except ImportError as e:
-            logger.warning(f"Email service dependencies not installed: {e}")
-            logger.info("Install with: pip install flask-headless-auth[email]")
-        except Exception as e:
-            logger.error(f"Failed to initialize email service: {e}")
-    
     def _init_oauth(self, app, **kwargs):
         """Initialize OAuth providers."""
         if not app.config.get('AUTHSVC_ENABLE_OAUTH', True):
@@ -388,10 +357,7 @@ class AuthSvc:
             'http://localhost:3000'  # Sensible default for development
         )
         
-        # Pass email_manager if it exists
-        email_manager = getattr(app, 'email_manager', None)
-        
-        # Create blueprint with model classes, cache, and OAuth config
+        # Create blueprint with model classes and cache
         auth_bp = create_auth_blueprint(
             user_model=self.user_model,
             blacklisted_token_model=self.blacklisted_token_model,
@@ -399,7 +365,6 @@ class AuthSvc:
             password_reset_token_model=self.password_reset_token_model,
             user_activity_log_model=self.user_activity_log_model,
             cache=self.cache,  # Pass cache (can be None)
-            email_manager=email_manager,
             blueprint_name=blueprint_name,
             post_login_redirect_url=post_login_redirect_url,
             cache_key_prefix=self.cache_key_prefix  # Monorepo support
@@ -562,7 +527,9 @@ class AuthSvc:
             before_token_refresh, after_token_refresh,
             before_password_change, after_password_change,
             before_mfa_verify, after_mfa_verify,
-            on_oauth_login, before_role_assign, after_role_assign
+            on_oauth_login, before_role_assign, after_role_assign,
+            send_verification_email, send_password_reset_email,
+            send_welcome_email
 
         Usage::
 
@@ -577,6 +544,16 @@ class AuthSvc:
             def add_org_claims(user, claims):
                 claims['tenant_id'] = lookup_tenant(user['id'])
                 return claims
+
+            @auth.hook('send_verification_email')
+            def send_verify(user, token):
+                url = f"https://myapp.com/confirm-email?token={token}"
+                send_email(to=user['email'], subject='Verify', body=url)
+
+            @auth.hook('send_password_reset_email')
+            def send_reset(user, token):
+                url = f"https://myapp.com/reset-password?token={token}"
+                send_email(to=user['email'], subject='Reset', body=url)
 
         Args:
             hook_name: One of the supported hook names
@@ -598,4 +575,3 @@ class AuthSvc:
         """
         self.hooks.register(hook_name, fn)
         return self
-
