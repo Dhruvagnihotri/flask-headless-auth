@@ -77,7 +77,7 @@ def create_default_models(db, table_prefix='authsvc_'):
             last_name = db.Column(db.String(100))
             phone_number = db.Column(db.String(20))
             date_of_birth = db.Column(db.Date)
-            profile_picture = db.Column(db.String(500))
+            profile_picture_url = db.Column(db.String(500))
             bio = db.Column(db.Text)
             
             # Address fields

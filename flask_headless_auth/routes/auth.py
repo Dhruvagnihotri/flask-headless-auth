@@ -299,7 +299,7 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                     "state": user_dict.get("state"),
                     "country": user_dict.get("country"),
                     "zip_code": user_dict.get("zip_code"),
-                    "profile_picture": user_dict.get("profile_picture")
+                    "profile_picture_url": user_dict.get("profile_picture_url")
                 }
             
             # Auto-resolve role_name if role_id is present but role_name is missing
@@ -458,7 +458,7 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     
             # Update user's profile picture URL in database
             update_result = auth_manager.update_user_authsvc(current_user_email, {
-                'profile_picture': profile_picture_url
+                'profile_picture_url': profile_picture_url
             })
     
             # Clear user cache

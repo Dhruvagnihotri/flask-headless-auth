@@ -424,6 +424,11 @@ class UserManager:
 
         self.user_data_access.invalidate_password_reset_token(token)
 
+        # Clear brute-force lockout so the user can log in immediately
+        audit_mgr = _get_audit_manager()
+        if audit_mgr:
+            audit_mgr.clear_failed_login_attempts(user_id)
+
         self.user_data_access.log_user_activity(user_id, "Password reset completed")
 
         self._log_auth_event(

@@ -256,6 +256,34 @@ class AuditManager:
             q = q.filter_by(ip_address=ip_address)
         return q.count()
 
+    def clear_failed_login_attempts(self, user_id):
+        """
+        Delete failed-login audit rows within the rate-limit window for a user.
+
+        Called after a successful password reset so the user is not
+        still locked out by the brute-force rate limiter.  Only deletes
+        rows inside the configured ``AUTHSVC_LOGIN_ATTEMPT_WINDOW`` so
+        older audit history is preserved.
+        """
+        try:
+            window_minutes = current_app.config.get(
+                'AUTHSVC_LOGIN_ATTEMPT_WINDOW', 30)
+            cutoff = datetime.utcnow() - timedelta(minutes=int(window_minutes))
+
+            self.AuditLog.query.filter(
+                self.AuditLog.action == AuditActions.USER_LOGIN_FAILED,
+                self.AuditLog.actor_user_id == user_id,
+                self.AuditLog.timestamp >= cutoff,
+            ).delete(synchronize_session='fetch')
+            self.db.session.commit()
+            logger.debug(f'Cleared failed login attempts for user {user_id}')
+        except Exception as exc:
+            logger.warning(f'Failed to clear login attempts (non-fatal): {exc}')
+            try:
+                self.db.session.rollback()
+            except Exception:
+                pass
+
     # ==================================================================
     # SESSION MANAGEMENT  (Supabase auth.sessions parity)
     # ==================================================================
@@ -270,6 +298,9 @@ class AuditManager:
 
         Returns the session_id (UUID string) to embed in the JWT.
         """
+        # Opportunistic cleanup: revoke stale sessions for this user on login
+        self._cleanup_user_stale_sessions(user_id)
+
         try:
             ip, ua = _request_context()
             sid = str(uuid.uuid4())
@@ -392,8 +423,73 @@ class AuditManager:
             except Exception:
                 pass
 
+    def _cleanup_user_stale_sessions(self, user_id):
+        """
+        Lightweight opportunistic revoke: mark expired / inactive sessions
+        as revoked for this user.  Called on login and session list fetch.
+
+        This does NOT delete rows or enforce caps — those are heavy
+        operations that belong in cleanup_expired_sessions() called from
+        a scheduler (like Supabase's pg_cron).
+
+        Only does cheap UPDATEs on the user's own active sessions.
+
+        Safe: swallows all exceptions.
+        """
+        try:
+            now = datetime.utcnow()
+            revoked_count = 0
+
+            active_sessions = self.UserSession.query.filter_by(
+                user_id=user_id, is_active=True, revoked=False
+            ).all()
+
+            for s in active_sessions:
+                should_revoke = False
+                reason = None
+
+                # 1. Hard expiry
+                if s.expires_at and s.expires_at < now:
+                    should_revoke = True
+                    reason = 'session_expired'
+
+                # 2. Inactivity timeout
+                if not should_revoke:
+                    try:
+                        inactivity_minutes = current_app.config.get(
+                            'AUTHSVC_SESSION_INACTIVITY_TIMEOUT')
+                        if inactivity_minutes and s.last_activity:
+                            cutoff = now - timedelta(minutes=int(inactivity_minutes))
+                            if s.last_activity < cutoff:
+                                should_revoke = True
+                                reason = 'inactivity_timeout'
+                    except Exception:
+                        pass
+
+                if should_revoke:
+                    s.is_active = False
+                    s.revoked = True
+                    s.revoked_at = now
+                    s.revoke_reason = reason
+                    revoked_count += 1
+
+            if revoked_count:
+                self.db.session.commit()
+                logger.debug(
+                    f'Auto-cleaned {revoked_count} stale sessions for user {user_id}')
+
+        except Exception as exc:
+            logger.warning(f'User session cleanup failed (non-fatal): {exc}')
+            try:
+                self.db.session.rollback()
+            except Exception:
+                pass
+
     def get_user_sessions(self, user_id, active_only=True):
-        """Return sessions for a user."""
+        """Return sessions for a user.  Auto-cleans stale sessions first."""
+        # Opportunistic cleanup before returning results
+        self._cleanup_user_stale_sessions(user_id)
+
         q = self.UserSession.query.filter_by(user_id=user_id)
         if active_only:
             q = q.filter_by(is_active=True, revoked=False)
@@ -439,14 +535,16 @@ class AuditManager:
 
     def cleanup_expired_sessions(self):
         """
-        Periodic task: mark expired and inactive sessions as revoked.
+        Global periodic task: mark expired / inactive sessions as revoked,
+        then purge old revoked rows.
 
-        Handles both:
+        Handles:
         1. Sessions past their ``expires_at`` (hard timeout)
         2. Sessions idle longer than ``AUTHSVC_SESSION_INACTIVITY_TIMEOUT``
+        3. DELETE revoked rows older than ``AUTHSVC_PURGE_REVOKED_AFTER_DAYS``
 
-        Call this from a scheduler (e.g., APScheduler, Celery beat) or
-        a management command.
+        Call from a scheduler (APScheduler, Celery beat) or management
+        command.  Also safe to call from a health-check endpoint.
         """
         try:
             now = datetime.utcnow()
@@ -486,6 +584,28 @@ class AuditManager:
                 pass
 
             self.db.session.commit()
+
+            # 3. Purge old revoked rows (Supabase pg_cron parity)
+            try:
+                purge_days = current_app.config.get(
+                    'AUTHSVC_PURGE_REVOKED_AFTER_DAYS', 30)
+                if purge_days:
+                    purge_cutoff = now - timedelta(days=int(purge_days))
+                    deleted = self.UserSession.query.filter(
+                        self.UserSession.revoked == True,
+                        self.UserSession.revoked_at != None,
+                        self.UserSession.revoked_at < purge_cutoff,
+                    ).delete(synchronize_session='fetch')
+                    if deleted:
+                        self.db.session.commit()
+                        logger.info(f'Purged {deleted} old revoked sessions')
+            except Exception as exc:
+                logger.warning(f'Session purge failed (non-fatal): {exc}')
+                try:
+                    self.db.session.rollback()
+                except Exception:
+                    pass
+
             return revoked_count
         except Exception as exc:
             logger.warning(f'Session cleanup failed: {exc}')

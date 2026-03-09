@@ -209,7 +209,7 @@ class User(db.Model, UserMixin):
     phone = db.Column(db.String(20))
     subscription = db.Column(db.String(50), default='free')
     credits = db.Column(db.Integer, default=0)
-    profile_picture = db.Column(db.String(500))
+    profile_picture_url = db.Column(db.String(500))
     
     # Computed properties
     @property

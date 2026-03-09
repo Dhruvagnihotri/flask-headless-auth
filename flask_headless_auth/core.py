@@ -514,6 +514,89 @@ class AuthSvc:
             raise ValueError(error_msg)
 
     # ==================================================================
+    # TOKEN RE-ISSUANCE (for role/permission changes)
+    # ==================================================================
+    #
+    # Use these methods when your app changes a user's role or permissions
+    # and you need to issue fresh tokens with updated JWT claims.
+    #
+    # Example (after assigning admin role during onboarding):
+    #
+    #     authsvc = current_app.extensions['authsvc']
+    #     user_dict = {'id': user.id, 'email': user.email, 'role_id': user.role_id, ...}
+    #     tokens = authsvc.create_tokens_for_user(user_dict)
+    #     response = make_response(jsonify({...}), 201)
+    #     authsvc.set_token_cookies(response, tokens)
+    #     return response
+
+    def create_tokens_for_user(self, user_dict, audit_action=None):
+        """
+        Create fresh access + refresh tokens for a user.
+
+        Automatically resolves role name and permissions from the database,
+        embeds them in JWT claims, and handles session/audit tracking.
+
+        This is the recommended way to re-issue tokens after a role change
+        (e.g. user becomes admin after creating a practice). The consuming
+        app should NOT call create_access_token / create_refresh_token
+        directly.
+
+        Args:
+            user_dict: Dict with at least 'id', 'email', 'role_id'.
+                       Optional: 'first_name', 'last_name', 'provider'.
+            audit_action: Audit trail label (default: 'token.reissue').
+
+        Returns:
+            dict: {'access_token': str, 'refresh_token': str}
+        """
+        from flask_headless_auth.managers.token_manager import TokenManager
+        from flask_jwt_extended import get_jwt
+
+        # Reuse existing session from current JWT (don't create a duplicate).
+        # Returns None when called outside a request/JWT context (e.g. background job),
+        # which causes generate_token_authsvc to create a new session instead.
+        reuse_session_id = None
+        try:
+            reuse_session_id = get_jwt().get('session_id')
+        except Exception:
+            pass
+
+        tm = TokenManager()
+        return tm.generate_token_authsvc(
+            user_dict,
+            audit_action=audit_action or 'token.reissue',
+            reuse_session_id=reuse_session_id,
+        )
+
+    def set_token_cookies(self, response, tokens):
+        """
+        Set access and refresh token cookies on a Flask response.
+
+        Respects the app's AUTHSVC_TOKEN_DELIVERY config:
+        - 'cookies_only': sets cookies for browser requests (no-op for
+          non-browser clients -- the caller is responsible for including
+          tokens in the response body when needed).
+        - 'body_only': no-op (tokens are already in the response body).
+        - 'dual': always sets cookies for browser requests.
+
+        Args:
+            response: Flask Response object to set cookies on.
+            tokens: Dict with 'access_token' and 'refresh_token'
+                    (as returned by create_tokens_for_user).
+        """
+        from flask_headless_auth.utils.request import is_browser_request
+        from flask_jwt_extended import set_access_cookies, set_refresh_cookies
+
+        delivery_mode = self.app.config.get('AUTHSVC_TOKEN_DELIVERY', 'cookies_only')
+
+        if delivery_mode == 'body_only':
+            return
+
+        if is_browser_request() or delivery_mode == 'dual':
+            set_access_cookies(response, tokens['access_token'])
+            set_refresh_cookies(response, tokens['refresh_token'])
+
+    # ==================================================================
     # AUTH LIFECYCLE HOOKS (Supabase Auth Hooks parity)
     # ==================================================================
 

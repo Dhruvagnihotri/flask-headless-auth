@@ -20,6 +20,7 @@ from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
 import logging
 from flask_headless_auth.interfaces import UserDataAccess
+from flask_headless_auth.utils.request import is_browser_request as _is_browser_request
 
 logger = logging.getLogger(__name__)
 
@@ -47,7 +48,7 @@ def _get_hooks_manager():
 
 
 class TokenManager:
-    def __init__(self, user_data_access: UserDataAccess):
+    def __init__(self, user_data_access: UserDataAccess = None):
         self.user_data_access = user_data_access
 
     # ------------------------------------------------------------------
@@ -146,13 +147,20 @@ class TokenManager:
                 decoded_refresh = decode_token(refresh_token)
                 real_jti = decoded_refresh.get('jti')
                 if real_jti and real_jti != placeholder_jti:
-                    # Update session record with the actual JTI
-                    session_record = audit_mgr.UserSession.query.filter_by(
-                        jti=placeholder_jti, revoked=False).first()
+                    # Find session record: by placeholder_jti (new login) or by
+                    # session_id (token re-issuance where placeholder_jti is None)
+                    session_record = None
+                    if placeholder_jti is not None:
+                        session_record = audit_mgr.UserSession.query.filter_by(
+                            jti=placeholder_jti, revoked=False).first()
+                    elif reuse_session_id:
+                        session_record = audit_mgr.UserSession.query.filter_by(
+                            session_id=reuse_session_id, revoked=False).first()
                     if session_record:
+                        old_jti = session_record.jti
                         session_record.jti = real_jti
                         audit_mgr.db.session.commit()
-                        logger.debug(f'Updated session JTI from {placeholder_jti} to {real_jti}')
+                        logger.debug(f'Updated session JTI from {old_jti} to {real_jti}')
             except Exception as exc:
                 logger.warning(f'Failed to update session JTI: {exc}')
 
@@ -186,9 +194,7 @@ class TokenManager:
     @staticmethod
     def is_browser_request():
         """Check if request is from a browser (vs API client like Postman)."""
-        user_agent = request.headers.get('User-Agent', '').lower()
-        browsers = ['chrome', 'firefox', 'safari', 'edge', 'opera', 'trident', 'msie']
-        return any(browser in user_agent for browser in browsers)
+        return _is_browser_request()
 
     def generate_token_and_set_cookies(self, user, audit_action=None):
         """
@@ -296,7 +302,7 @@ class TokenManager:
         tokens = self.generate_token_authsvc(
             user, 
             audit_action='token.refresh',
-            reuse_session_id=old_session_id  # KEY FIX: Reuse session instead of creating new one
+            reuse_session_id=old_session_id
         )
         
         # Update the session's JTI with the new refresh token's JTI

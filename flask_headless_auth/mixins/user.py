@@ -56,7 +56,7 @@ class UserMixin:
             'role_id': getattr(self, 'role_id', None),
             'provider': getattr(self, 'provider', 'local'),
             'date_of_birth': getattr(self, 'date_of_birth').isoformat() if getattr(self, 'date_of_birth', None) else None,
-            'profile_picture': getattr(self, 'profile_picture', None),
+            'profile_picture_url': getattr(self, 'profile_picture_url', None),
             'bio': getattr(self, 'bio', None),
             'occupation': getattr(self, 'occupation', None),
             'address': getattr(self, 'address', None),

@@ -26,12 +26,13 @@ DEFAULT_CONFIG = {
     'AUTHSVC_ENABLE_ADMIN': True,                    # Enable admin user-management routes
     'AUTHSVC_ADMIN_URL_PREFIX': '/api/admin',        # URL prefix for admin routes
     
-    # Audit & Session Management (Supabase parity)
+    # Audit & Session Management (Supabase GoTrue parity)
     'AUTHSVC_ENABLE_AUDIT': True,                    # Enable audit logging and session tracking
     'AUTHSVC_AUDIT_URL_PREFIX': '/api/audit',        # URL prefix for audit routes
-    'AUTHSVC_SESSION_TIMEOUT_MINUTES': None,         # Session timeout (None = no timeout)
-    'AUTHSVC_SINGLE_SESSION_PER_USER': False,        # Enforce single session per user (Supabase Pro feature)
+    'AUTHSVC_SESSION_TIMEOUT_MINUTES': None,         # Hard session timeout (None = no timeout)
+    'AUTHSVC_SINGLE_SESSION_PER_USER': False,        # Enforce single session per user
     'AUTHSVC_SESSION_INACTIVITY_TIMEOUT': None,      # Inactivity timeout in minutes
+    'AUTHSVC_PURGE_REVOKED_AFTER_DAYS': 30,          # Auto-delete revoked session rows after N days (like Supabase pg_cron)
     'AUTHSVC_MAX_LOGIN_ATTEMPTS': 5,                 # Max failed login attempts before blocking
     'AUTHSVC_LOGIN_ATTEMPT_WINDOW': 30,              # Time window for login attempts (minutes)
     
