@@ -430,6 +430,9 @@ class TokenManager:
             if not jti:
                 return jsonify({'error': 'JWT ID not found in token.'}), 400
 
+            if not self.user_data_access:
+                return jsonify({'error': 'TokenManager requires user_data_access for this operation'}), 500
+
             if self.user_data_access.is_token_blacklisted(jti):
                 return jsonify({'msg': 'Token is already blacklisted.'}), 200
 
@@ -452,6 +455,8 @@ class TokenManager:
             return jsonify({'error': 'Error blacklisting token', 'details': str(e)}), 500
 
     def verify_mfa_authsvc(self, user, token):
+        if not self.user_data_access:
+            raise RuntimeError('TokenManager requires user_data_access for MFA verification')
         return self.user_data_access.verify_mfa_token(user['id'], token)
 
     # ------------------------------------------------------------------

@@ -194,9 +194,8 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     def logout_authsvc():
         current_user_email = get_jwt_identity()  # string (email)
         auth_manager.blacklist_token_authsvc()
-        # Clear user-specific cache
         if cache:
-            cache.delete(f"user_{current_user_email}")
+            cache.delete(f"{cache_key_prefix}{current_user_email}")
         response = make_response(jsonify({"msg": "Successfully logged out"}))
         unset_jwt_cookies(response)
         return response
@@ -281,26 +280,11 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                     user_details = user_dict
                     
             except Exception as e:
-                # If model access fails, fall back to dict-based approach
+                # If model access fails, pass through whatever find_user_by_email returned.
+                # The repository's find_user_by_email already calls to_dict() (if available),
+                # so user_dict should contain all app-specific fields.
                 logger.warning(f"Could not access user model, using dict: {e}")
-                user_details = {
-                    "id": user_dict["id"],
-                    "email": user_dict["email"],
-                    "roles": user_dict.get("role_id"),
-                    "first_name": user_dict.get("first_name"),
-                    "last_name": user_dict.get("last_name"),
-                    "phone_number": user_dict.get("phone_number"),
-                    "is_verified": user_dict.get("is_verified"),
-                    "bio": user_dict.get("bio"),
-                    "occupation": user_dict.get("occupation"),
-                    "date_of_birth": user_dict.get("date_of_birth").isoformat() if user_dict.get("date_of_birth") else None,
-                    "address": user_dict.get("address"),
-                    "city": user_dict.get("city"),
-                    "state": user_dict.get("state"),
-                    "country": user_dict.get("country"),
-                    "zip_code": user_dict.get("zip_code"),
-                    "profile_picture_url": user_dict.get("profile_picture_url")
-                }
+                user_details = dict(user_dict)
             
             # Auto-resolve role_name if role_id is present but role_name is missing
             if user_details.get('role_id') and not user_details.get('role_name'):
@@ -333,7 +317,7 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
         user_data = request.get_json()
         response = auth_manager.update_user_authsvc(current_user_email, user_data)
         if cache:
-            cache.delete(f"user_{current_user_email}")
+            cache.delete(f"{cache_key_prefix}{current_user_email}")
         return response
     
     @authsvc.route('/confirm/<token>', methods=['GET'])
