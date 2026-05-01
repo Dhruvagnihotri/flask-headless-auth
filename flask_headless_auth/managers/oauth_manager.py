@@ -159,11 +159,15 @@ class OAuthManager:
 
             # Store custom data in Flask g context for after_request hooks
             # Apps can use this to access custom data passed through OAuth
-            if is_new_user and custom_data:
+            # Note: always propagate custom_data (not just new users) so that
+            # consuming apps can apply promos to existing free-tier users too.
+            # The downstream promo handler has its own safety checks.
+            if custom_data:
                 from flask import g
                 g.oauth_user_email = user_info['email']
                 g.oauth_custom_data = custom_data
-                logger.info(f"[StatelessOAuth] Stored custom data for new user {user_info['email']}: {list(custom_data.keys())}")
+                g.oauth_is_new_user = is_new_user
+                logger.info(f"[StatelessOAuth] Stored custom data for {'new' if is_new_user else 'existing'} user {user_info['email']}: {list(custom_data.keys())}")
 
             logger.info(f"[StatelessOAuth] OAuth successful for user: {user_info['email']}")
             return user, redirect_uri
@@ -270,11 +274,15 @@ class OAuthManager:
 
             # Store custom data in Flask g context for after_request hooks
             # Apps can use this to access custom data passed through OAuth
-            if is_new_user and custom_data:
+            # Note: always propagate custom_data (not just new users) so that
+            # consuming apps can apply promos to existing free-tier users too.
+            # The downstream promo handler has its own safety checks.
+            if custom_data:
                 from flask import g
                 g.oauth_user_email = user_info['email']
                 g.oauth_custom_data = custom_data
-                logger.info(f"[StatelessOAuth] Stored custom data for new user {user_info['email']}: {list(custom_data.keys())}")
+                g.oauth_is_new_user = is_new_user
+                logger.info(f"[StatelessOAuth] Stored custom data for {'new' if is_new_user else 'existing'} user {user_info['email']}: {list(custom_data.keys())}")
 
             logger.info(f"[StatelessOAuth] OAuth successful for user: {user_info['email']}")
             return user, redirect_uri
