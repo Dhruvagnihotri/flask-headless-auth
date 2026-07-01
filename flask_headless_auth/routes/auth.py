@@ -320,6 +320,64 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
             cache.delete(f"{cache_key_prefix}{current_user_email}")
         return response
     
+    # Change Email Route
+    @authsvc.route('/change-email', methods=['POST'])
+    @jwt_required()
+    def change_email():
+        current_user_email = get_jwt_identity()  # string (email)
+        data = request.get_json(silent=True) or {}
+        new_email = data.get('new_email') or data.get('email')
+        password = data.get('password') or data.get('current_password')
+
+        response, status = auth_manager.change_email_authsvc(
+            current_user_email, new_email, password)
+
+        # On success the JWT identity (old email) is now stale — reissue
+        # tokens bound to the new email so subsequent requests authenticate.
+        if status == 200:
+            body = response.get_json()
+            updated_user = body.get('user')
+            if cache:
+                cache.delete(f"{cache_key_prefix}{current_user_email}")
+            if updated_user:
+                token_response = auth_manager.generate_token_and_set_cookies(
+                    updated_user, audit_action='user.email_change')
+                token_body = token_response.get_json()
+                token_body['message'] = body.get('message')
+                token_body['user'] = updated_user
+                new_response = make_response(jsonify(token_body), 200)
+                for header_name, header_value in token_response.headers:
+                    if header_name.lower() == 'set-cookie':
+                        new_response.headers.add('Set-Cookie', header_value)
+                return new_response
+        return response, status
+
+    # Delete Account Route
+    @authsvc.route('/delete-account', methods=['POST'])
+    @jwt_required()
+    def delete_account():
+        current_user_email = get_jwt_identity()  # string (email)
+        data = request.get_json(silent=True) or {}
+        password = data.get('password') or data.get('current_password')
+
+        response, status = auth_manager.delete_account_authsvc(
+            current_user_email, password)
+
+        if status == 200:
+            body = response.get_json()
+            # Best-effort: blacklist current token + clear cache, then
+            # unset auth cookies so the browser session ends cleanly.
+            try:
+                auth_manager.blacklist_token_authsvc()
+            except Exception as e:
+                logger.warning(f"Failed to blacklist token on account delete: {e}")
+            if cache:
+                cache.delete(f"{cache_key_prefix}{current_user_email}")
+            final_response = make_response(jsonify(body), 200)
+            unset_jwt_cookies(final_response)
+            return final_response
+        return response, status
+
     @authsvc.route('/confirm/<token>', methods=['GET'])
     def confirm_email(token):
         result = auth_manager.confirm_email(token)

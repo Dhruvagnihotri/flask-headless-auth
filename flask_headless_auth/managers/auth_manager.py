@@ -64,6 +64,12 @@ class AuthManager:
     def update_user_authsvc(self, user_id, user_data):
         return self.user_manager.update_user(user_id, user_data)
 
+    def change_email_authsvc(self, current_email, new_email, password=None):
+        return self.user_manager.change_email(current_email, new_email, password)
+
+    def delete_account_authsvc(self, current_email, password=None):
+        return self.user_manager.delete_account(current_email, password)
+
     # Login and token management are delegated to the token manager
     def login_user_authsvc(self, user_data):
         return self.user_manager.login_user(user_data)

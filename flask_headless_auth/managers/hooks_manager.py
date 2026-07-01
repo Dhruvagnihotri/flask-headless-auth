@@ -47,6 +47,10 @@ Available hooks:
     on_oauth_login      (user, provider)     -> user (can modify)
     before_role_assign  (user_id, role_id)   -> None | raise ValueError
     after_role_assign   (user_id, role_id)   -> None
+    before_email_change (user, new_email)    -> None | raise ValueError
+    after_email_change  (user)               -> None
+    before_account_delete(user)              -> None | raise ValueError
+    after_account_delete (user)              -> None
 
     Email hooks (app provides the email delivery):
     send_verification_email  (user, token) -> None
@@ -81,6 +85,8 @@ class HooksManager:
         'before_mfa_verify',
         'before_token_refresh',
         'before_role_assign',
+        'before_email_change',
+        'before_account_delete',
     })
 
     # Hook that returns modified data
@@ -111,6 +117,8 @@ class HooksManager:
         'before_mfa_verify', 'after_mfa_verify',
         'on_oauth_login',
         'before_role_assign', 'after_role_assign',
+        'before_email_change', 'after_email_change',
+        'before_account_delete', 'after_account_delete',
         # Email hooks (delivery delegated to the consuming app)
         'send_verification_email',
         'send_password_reset_email',

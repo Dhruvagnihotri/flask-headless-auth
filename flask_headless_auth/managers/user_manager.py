@@ -242,8 +242,33 @@ class UserManager:
         # Handle password update separately (extract before protected-field filter)
         new_password_hash = None
         if 'password' in user_data:
-            new_password_hash = self.user_data_access.set_password(user_data['password'])
+            new_password = user_data['password']
             del user_data['password']
+            current_password = user_data.pop('current_password', None)
+
+            # New password strength check
+            if not new_password or len(new_password) < 6:
+                return jsonify({'error': 'Password must be at least 6 characters'}), 400
+
+            # Verify current password for local-auth users. Without this
+            # check, any active session could silently take over the
+            # account by resetting the password. Pure-OAuth users (no
+            # password_hash) may set a password without verification.
+            auth_user = self.user_data_access.find_user_by_email(user_id, include_password_hash=True)
+            existing_hash = auth_user.get('password_hash') if auth_user else None
+            if existing_hash:
+                if not current_password:
+                    return jsonify({'error': 'Current password is required'}), 400
+                if not self.user_data_access.verify_password(existing_hash, current_password):
+                    self._log_auth_event(
+                        action='user.password_change',
+                        user_id=existing_user['id'],
+                        success=False,
+                        error_message='Invalid current password',
+                    )
+                    return jsonify({'error': 'Current password is incorrect'}), 400
+
+            new_password_hash = self.user_data_access.set_password(new_password)
 
         # Sanitize and prepare update data
         update_data = {}
@@ -438,3 +463,145 @@ class UserManager:
         )
 
         return jsonify({'message': 'Password has been reset successfully.'}), 200
+
+    def change_email(self, current_email, new_email, password=None):
+        """
+        Change the authenticated user's email address.
+
+        Requires the current password for local-auth users. The new email
+        must be valid and unused. On success the account is marked
+        unverified and a fresh verification email is dispatched via the
+        send_verification_email hook (if registered).
+        """
+        if not new_email or not str(new_email).strip():
+            return jsonify({'error': 'New email is required'}), 400
+
+        import re
+        new_email = str(new_email).strip().lower()
+        email_pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
+        if not re.match(email_pattern, new_email):
+            return jsonify({'error': 'Invalid email format'}), 400
+
+        auth_user = self.user_data_access.find_user_by_email(
+            current_email, include_password_hash=True)
+        if not auth_user:
+            return jsonify({'error': 'User not found'}), 404
+
+        if new_email == current_email.lower():
+            return jsonify({'error': 'New email must be different from your current email'}), 400
+
+        if self.user_data_access.find_user_by_email(new_email):
+            return jsonify({'error': 'Email is already in use'}), 400
+
+        # Verify current password for local-auth users
+        existing_hash = auth_user.get('password_hash')
+        if existing_hash:
+            if not password:
+                return jsonify({'error': 'Password is required to change your email'}), 400
+            if not self.user_data_access.verify_password(existing_hash, password):
+                self._log_auth_event(
+                    action='user.email_change',
+                    user_id=auth_user['id'],
+                    success=False,
+                    error_message='Invalid password',
+                )
+                return jsonify({'error': 'Password is incorrect'}), 400
+
+        user_id = auth_user['id']
+
+        # --- before_email_change hook (blocking) ---
+        hooks = self._get_hooks()
+        if hooks and hooks.has_hooks('before_email_change'):
+            try:
+                hooks.fire('before_email_change', auth_user, new_email)
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
+
+        # Update email and force re-verification
+        self.user_data_access.update_user(user_id, {
+            'email': new_email,
+            'is_verified': False,
+        })
+        self.user_data_access.log_user_activity(user_id, "Email address changed")
+
+        self._log_auth_event(
+            action='user.email_change',
+            user_id=user_id,
+            metadata={'old_email': current_email, 'new_email': new_email},
+        )
+
+        updated_user = self.user_data_access.find_user_by_email(new_email)
+
+        # Dispatch verification email to the new address (app delivers)
+        if hooks and hooks.has_hooks('send_verification_email'):
+            try:
+                from flask_headless_auth.managers.verification_token import generate_confirmation_token
+                token = generate_confirmation_token(new_email)
+                hooks.fire('send_verification_email', updated_user, token)
+            except Exception as e:
+                logger.warning(f"send_verification_email hook failed (non-fatal): {e}")
+
+        # --- after_email_change hook (non-blocking) ---
+        if hooks and hooks.has_hooks('after_email_change'):
+            try:
+                hooks.fire('after_email_change', updated_user)
+            except Exception as e:
+                logger.warning(f"after_email_change hook failed (non-fatal): {e}")
+
+        return jsonify({
+            'message': 'Email changed successfully. Please verify your new email address.',
+            'user': updated_user,
+        }), 200
+
+    def delete_account(self, current_email, password=None):
+        """
+        Permanently delete the authenticated user's account.
+
+        Requires a matching password for local-auth users. Pure-OAuth
+        users (no password_hash) can delete without a password.
+        """
+        auth_user = self.user_data_access.find_user_by_email(
+            current_email, include_password_hash=True)
+        if not auth_user:
+            return jsonify({'error': 'User not found'}), 404
+
+        # Verify password for local-auth users
+        existing_hash = auth_user.get('password_hash')
+        if existing_hash:
+            if not password:
+                return jsonify({'error': 'Password is required to delete your account'}), 400
+            if not self.user_data_access.verify_password(existing_hash, password):
+                self._log_auth_event(
+                    action='user.account_delete',
+                    user_id=auth_user['id'],
+                    success=False,
+                    error_message='Invalid password',
+                )
+                return jsonify({'error': 'Password is incorrect'}), 400
+
+        user_id = auth_user['id']
+
+        # --- before_account_delete hook (blocking) ---
+        hooks = self._get_hooks()
+        if hooks and hooks.has_hooks('before_account_delete'):
+            try:
+                hooks.fire('before_account_delete', auth_user)
+            except ValueError as exc:
+                return jsonify({'error': str(exc)}), 400
+
+        # Audit BEFORE deletion so the user_id FK is still valid
+        self._log_auth_event(
+            action='user.account_delete',
+            user_id=user_id,
+        )
+
+        self.user_data_access.delete_user(user_id)
+
+        # --- after_account_delete hook (non-blocking) ---
+        if hooks and hooks.has_hooks('after_account_delete'):
+            try:
+                hooks.fire('after_account_delete', {'id': user_id, 'email': current_email})
+            except Exception as e:
+                logger.warning(f"after_account_delete hook failed (non-fatal): {e}")
+
+        return jsonify({'message': 'Account deleted successfully'}), 200
