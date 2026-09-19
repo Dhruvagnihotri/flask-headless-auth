@@ -211,16 +211,24 @@ class AuthSvc:
             self.jwt.init_app(app)
         
         # Setup JWT blacklist checker
-        # Need to capture self to access blacklisted_token_model
+        # Need to capture self to access blacklisted_token_model and db
         blacklisted_token_model = self.blacklisted_token_model
-        
+        db = self.db
+
         @self.jwt.token_in_blocklist_loader
         def check_if_token_blacklisted(jwt_header, jwt_payload):
             try:
                 jti = jwt_payload['jti']
                 return blacklisted_token_model.query.filter_by(jti=jti).first() is not None
             except Exception as e:
-                # Fail open if blacklist table schema is outdated (better UX than 500 error)
+                # This runs on EVERY JWT-protected request. Without the
+                # rollback, a transient DB error here (not just a schema
+                # mismatch — any dropped connection/deadlock) leaves the
+                # session poisoned for the rest of this request, and the
+                # exact same failure mode that took down a sibling package's
+                # production app twice (PendingRollbackError cascading to
+                # every subsequent DB-touching request on this worker).
+                db.session.rollback()
                 logger.warning(f"Token blacklist check failed (schema mismatch?): {e}")
                 return False  # Assume not blacklisted if we can't check
         

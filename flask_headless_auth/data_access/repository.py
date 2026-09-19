@@ -257,7 +257,11 @@ class SQLAlchemyUserRepository(UserDataAccess):
         try:
             return self.BlacklistedToken.query.filter_by(jti=jti).first() is not None
         except Exception as e:
-            # Fail open if blacklist table schema is outdated (better UX than 500 error)
+            # See core.py's check_if_token_blacklisted for why this rollback
+            # matters: without it, any transient DB error here (not just a
+            # schema mismatch) leaves the session poisoned for the rest of
+            # the request instead of just this one check.
+            self.db.session.rollback()
             import logging
             logger = logging.getLogger(__name__)
             logger.warning(f"Token blacklist check failed (schema mismatch?): {e}")
