@@ -160,15 +160,28 @@ class AuthSvc:
             self.db = extensions.get_db()
             self.db.init_app(app)
         
-        # Always create default models, then override with custom ones
-        # Table prefix is configurable per app (e.g. 'mrscribe_', 'brakit_')
+        # Create default models only for slots the caller hasn't already
+        # overridden, and only for features that are actually enabled.
+        # Table prefix is configurable per app (e.g. 'mrscribe_', 'brakit_'),
+        # or '' for an app on its own dedicated database. _load_config()
+        # (called earlier in init_app) already ran app.config.setdefault(...)
+        # for every DEFAULT_CONFIG key including AUTHSVC_TABLE_PREFIX, so a
+        # bare .get() here always finds a value — no second inline default
+        # needed (a mismatched one used to live here: 'authsvc_' vs the real
+        # default 'authsvc', dead code that only ever misled readers).
         from flask_headless_auth.default_models import create_default_models
-        table_prefix = app.config.get('AUTHSVC_TABLE_PREFIX', 'authsvc_')
+        table_prefix = app.config.get('AUTHSVC_TABLE_PREFIX')
         (default_user, default_role, default_permission,
          default_blacklisted_token, default_mfa_token,
          default_password_reset_token, default_user_activity_log,
          default_oauth_token, default_audit_log, default_user_session,
-         default_activity_log, _) = create_default_models(self.db, table_prefix=table_prefix)
+         default_activity_log, _) = create_default_models(
+            self.db, table_prefix=table_prefix,
+            enable_rbac=app.config.get('AUTHSVC_ENABLE_RBAC', True),
+            enable_mfa=app.config.get('AUTHSVC_ENABLE_MFA', True),
+            enable_oauth=app.config.get('AUTHSVC_ENABLE_OAUTH', True),
+            enable_audit=app.config.get('AUTHSVC_ENABLE_AUDIT', True),
+        )
         
         # Use custom models where provided, defaults otherwise
         self.user_model = self.user_model or default_user

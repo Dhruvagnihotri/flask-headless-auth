@@ -193,12 +193,15 @@ def role_required_authsvc(required_role):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
+            if not current_app.config.get('AUTHSVC_ENABLE_RBAC', True):
+                return f(*args, **kwargs)
+
             claims = get_jwt()
             user_role_id = claims.get('role')
-            
+
             if user_role_id is None:
                 return jsonify({"msg": "Access forbidden: no role assigned"}), 403
-            
+
             # If required_role is an integer, compare directly with role_id
             if isinstance(required_role, int):
                 if user_role_id != required_role:
@@ -233,15 +236,18 @@ def roles_required(*required_roles):
     def decorator(f):
         @wraps(f)
         def wrapper(*args, **kwargs):
+            if not current_app.config.get('AUTHSVC_ENABLE_RBAC', True):
+                return f(*args, **kwargs)
+
             claims = get_jwt()
             user_role_id = claims.get('role')
-            
+
             if user_role_id is None:
                 return jsonify({"msg": "Access forbidden: no role assigned"}), 403
-            
+
             checker = _get_checker()
             Role = checker.role_model
-            
+
             if Role:
                 role = Role.query.get(user_role_id)
                 if not role:
