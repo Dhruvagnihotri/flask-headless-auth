@@ -90,7 +90,9 @@ dependencies = [
     "Flask-WTF>=1.1.0",
     "Flask-Talisman>=1.0.0",
     "Authlib>=1.2.0",
-    "PyJWT>=2.8.0",
+    "PyJWT[crypto]>=2.8.0",  # [crypto] pulls in `cryptography` for RS256 verification (PyJWKClient) —
+                              # currently also present transitively via Authlib, but that's not a
+                              # guarantee worth relying on for a security-critical signature check.
     "python-dotenv>=1.0.0",
     "PyYAML>=6.0",
     "Werkzeug>=2.0.0",
