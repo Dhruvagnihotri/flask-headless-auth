@@ -211,10 +211,20 @@ class AuthSvc:
             self.jwt.init_app(app)
         
         # Setup JWT blacklist checker
-        # Need to capture self to access blacklisted_token_model, db, and cache
+        # Need to capture self to access blacklisted_token_model and db
         blacklisted_token_model = self.blacklisted_token_model
         db = self.db
-        cache = self.cache
+        # Deliberately NOT `cache = self.cache` here — _init_jwt runs BEFORE
+        # _init_cache_detection in init_app's sequence, so a snapshot taken
+        # at this point would always be None, permanently, even after
+        # self.cache gets correctly set moments later. Confirmed live
+        # (2026-09-19): the write side worked and the key really landed in
+        # Redis with the right TTL, but this snapshot bug meant the read
+        # side never once actually checked it — every read silently fell
+        # through to the DB path, masking the bug because that fallback is
+        # also correct, just not the fast path this was built for. `self`
+        # is captured by the closure below regardless, so reading
+        # `self.cache` at call time (not here) always sees the live value.
 
         @self.jwt.token_in_blocklist_loader
         def check_if_token_blacklisted(jwt_header, jwt_payload):
@@ -229,10 +239,10 @@ class AuthSvc:
             # original DB query only when no cache is configured, so apps
             # without Redis keep working exactly as before.
             from flask_headless_auth.managers.token_manager import TokenManager
-            if cache is not None:
+            if self.cache is not None:
                 try:
                     jti = jwt_payload['jti']
-                    return bool(cache.get(TokenManager.BLACKLIST_CACHE_KEY.format(jti=jti)))
+                    return bool(self.cache.get(TokenManager.BLACKLIST_CACHE_KEY.format(jti=jti)))
                 except Exception as e:
                     logger.warning(f"Blacklist cache check failed, falling back to DB: {e}")
             try:
