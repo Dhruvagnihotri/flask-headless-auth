@@ -5,8 +5,11 @@ NO REDIS REQUIRED - Just uses Flask's SECRET_KEY
 """
 import secrets
 import json
+import logging
 from itsdangerous import URLSafeTimedSerializer, BadSignature, SignatureExpired
 from flask import current_app
+
+logger = logging.getLogger(__name__)
 
 
 class StatelessOAuthStateHandler:
@@ -68,9 +71,9 @@ class StatelessOAuthStateHandler:
         serializer = self._get_serializer()
         signed_state = serializer.dumps(state_data)
         
-        print(f"[SelfContainedOAuth] Created signed state (no server storage): {signed_state[:40]}...")
+        logger.debug(f"[SelfContainedOAuth] Created signed state (no server storage): {signed_state[:40]}...")
         if custom_data:
-            print(f"[SelfContainedOAuth] State includes custom data: {list(custom_data.keys())}")
+            logger.debug(f"[SelfContainedOAuth] State includes custom data: {list(custom_data.keys())}")
         return signed_state
     
     def get_redirect_uri(self, state):
@@ -112,18 +115,18 @@ class StatelessOAuthStateHandler:
             
             redirect_uri = state_data.get('redirect_uri')
             custom_data = state_data.get('custom_data', {})
-            print(f"[SelfContainedOAuth] State verified and decoded: {redirect_uri}")
+            logger.debug(f"[SelfContainedOAuth] State verified and decoded: {redirect_uri}")
             if custom_data:
-                print(f"[SelfContainedOAuth] State includes custom data: {list(custom_data.keys())}")
+                logger.debug(f"[SelfContainedOAuth] State includes custom data: {list(custom_data.keys())}")
             return state_data
             
         except SignatureExpired:
-            print(f"[SelfContainedOAuth] State expired (>{self.max_age}s)")
+            logger.warning(f"[SelfContainedOAuth] State expired (>{self.max_age}s)")
             raise ValueError("OAuth state expired. Please try logging in again.")
         except BadSignature:
-            print(f"[SelfContainedOAuth] State signature invalid (possible tampering)")
+            logger.warning(f"[SelfContainedOAuth] State signature invalid (possible tampering)")
             raise ValueError("Invalid OAuth state. Please try logging in again.")
         except Exception as e:
-            print(f"[SelfContainedOAuth] Error decoding state: {e}")
+            logger.warning(f"[SelfContainedOAuth] Error decoding state: {e}")
             raise ValueError(f"Invalid OAuth state: {e}")
 

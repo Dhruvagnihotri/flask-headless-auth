@@ -2,12 +2,52 @@ import base64
 import json
 import logging
 import requests
-from flask import request, url_for, jsonify, session
+from urllib.parse import urlsplit
+from flask import request, url_for, jsonify, session, current_app
 from flask_headless_auth.oauth.providers import oauth_clients
 from flask_headless_auth.interfaces import UserDataAccess
 from flask_headless_auth.oauth.stateless_handler import StatelessOAuthStateHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _resolve_redirect_uri(requested_uri, default_uri):
+    """
+    CWE-601 (open redirect) guard: `redirect_uri` on /login/google and
+    /login/microsoft is caller-supplied — signing it into the OAuth state
+    (see StatelessOAuthStateHandler) stops an attacker from *tampering*
+    with it in transit, but does nothing to stop them from *choosing* a
+    malicious value in the first place (e.g. a phished link with
+    `?redirect_uri=https://evil.example/steal`), since the signature is
+    only ever checked for integrity, not origin.
+
+    If AUTHSVC_ALLOWED_REDIRECT_ORIGINS is configured, enforce it and fall
+    back to default_uri on any mismatch. If it isn't configured, this is
+    intentionally warn-only rather than enforced same-origin-by-default:
+    several apps already rely on a caller-supplied redirect_uri in
+    production without ever having set this, and silently changing that
+    behavior here could break a live login flow. The warning makes the
+    gap visible so an app owner can opt in deliberately.
+    """
+    allowed_origins = current_app.config.get('AUTHSVC_ALLOWED_REDIRECT_ORIGINS')
+    if not allowed_origins:
+        logger.warning(
+            "AUTHSVC_ALLOWED_REDIRECT_ORIGINS is not configured — "
+            "redirect_uri from the OAuth login request is accepted as-is. "
+            "Set it to a list of allowed origins (e.g. ['https://yourapp.com']) "
+            "to close this open-redirect surface."
+        )
+        return requested_uri
+
+    requested_origin = f"{urlsplit(requested_uri).scheme}://{urlsplit(requested_uri).netloc}"
+    if requested_origin in allowed_origins:
+        return requested_uri
+
+    logger.warning(
+        f"Rejected redirect_uri with disallowed origin '{requested_origin}' "
+        f"(allowed: {allowed_origins}) — falling back to default redirect"
+    )
+    return default_uri
 
 
 def _get_callback_uri(blueprint_name, endpoint_name):
@@ -49,13 +89,56 @@ class OAuthManager:
         logger.info(f"OAuthManager initialized with blueprint: {blueprint_name}, redirect: {post_login_redirect_url}")
         logger.info(f"OAuthManager using self-contained signed state (no Redis/sessions needed)")
 
+    _microsoft_jwks_client = None
+
+    def _verify_microsoft_id_token(self, id_token):
+        """
+        Verify a Microsoft-issued ID token's signature against Microsoft's
+        published JWKS, and check standard OIDC claims. Raises ValueError
+        on any failure (mirrors this file's existing error-handling style).
+
+        Issuer is validated by prefix/suffix rather than exact match: the
+        token exchange above uses the multi-tenant 'common' endpoint, so
+        the real `iss` claim contains whichever tenant actually authenticated
+        (https://login.microsoftonline.com/{tenant-guid}/v2.0), not the
+        literal string 'common'. This is the standard approach for
+        multi-tenant app registrations — audience is what actually pins
+        the token to this app.
+        """
+        import jwt as pyjwt
+
+        if not id_token:
+            raise ValueError("No id_token in Microsoft token response")
+
+        if OAuthManager._microsoft_jwks_client is None:
+            OAuthManager._microsoft_jwks_client = pyjwt.PyJWKClient(
+                'https://login.microsoftonline.com/common/discovery/v2.0/keys'
+            )
+
+        signing_key = OAuthManager._microsoft_jwks_client.get_signing_key_from_jwt(id_token)
+        claims = pyjwt.decode(
+            id_token,
+            signing_key.key,
+            algorithms=['RS256'],
+            audience=oauth_clients.microsoft.client_id,
+        )
+
+        issuer = claims.get('iss', '')
+        if not (issuer.startswith('https://login.microsoftonline.com/') and issuer.endswith('/v2.0')):
+            raise ValueError(f"Unexpected Microsoft id_token issuer: {issuer!r}")
+
+        return claims
+
     def google_login(self):
         try:
             # Use dynamic blueprint name for backend callback URL with HTTPS detection
             backend_callback_uri = _get_callback_uri(self.blueprint_name, 'google_callback_authsvc')
             
             # Get frontend redirect URI
-            frontend_redirect_uri = request.args.get('redirect_uri', self.post_login_redirect_url)
+            frontend_redirect_uri = _resolve_redirect_uri(
+                request.args.get('redirect_uri', self.post_login_redirect_url),
+                self.post_login_redirect_url
+            )
             
             # Collect custom data from query params
             # Skip 'redirect_uri' as it's handled separately
@@ -183,7 +266,10 @@ class OAuthManager:
             backend_callback_uri = _get_callback_uri(self.blueprint_name, 'microsoft_callback_authsvc')
             
             # Get frontend redirect URI
-            frontend_redirect_uri = request.args.get('redirect_uri', self.post_login_redirect_url)
+            frontend_redirect_uri = _resolve_redirect_uri(
+                request.args.get('redirect_uri', self.post_login_redirect_url),
+                self.post_login_redirect_url
+            )
             
             # Collect custom data from query params
             # Skip 'redirect_uri' as it's handled separately
@@ -253,12 +339,19 @@ class OAuthManager:
                 raise ValueError(f"Token exchange failed: {token_response.text}")
             
             token_data = token_response.json()
-            
-            # Decode the ID token to get user info
-            import jwt
+
+            # Verify and decode the ID token. This used to skip signature
+            # verification entirely (jwt.decode(..., options={"verify_signature":
+            # False})) — meaning nothing here actually confirmed the token was
+            # cryptographically issued by Microsoft rather than an arbitrary
+            # unsigned JSON blob shaped like a JWT. Signature verification
+            # against Microsoft's published JWKS, plus an audience check
+            # against our own client_id, is exactly what the `openid` scope
+            # exists for and what every OIDC client library does by default —
+            # this only ever skipped it.
             id_token = token_data.get('id_token')
-            user_info = jwt.decode(id_token, options={"verify_signature": False})
-            
+            user_info = self._verify_microsoft_id_token(id_token)
+
             logger.info(f"[StatelessOAuth] Successfully fetched user info for: {user_info.get('email')}")
 
             user = self.user_data_access.find_user_by_email(user_info['email'])
