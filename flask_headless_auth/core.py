@@ -211,12 +211,30 @@ class AuthSvc:
             self.jwt.init_app(app)
         
         # Setup JWT blacklist checker
-        # Need to capture self to access blacklisted_token_model and db
+        # Need to capture self to access blacklisted_token_model, db, and cache
         blacklisted_token_model = self.blacklisted_token_model
         db = self.db
+        cache = self.cache
 
         @self.jwt.token_in_blocklist_loader
         def check_if_token_blacklisted(jwt_header, jwt_payload):
+            # This runs on EVERY JWT-protected request — the hottest path
+            # in the whole app. If a cache (Redis, via Flask-Caching) is
+            # configured, it's the sole source of truth: blacklist_token_
+            # authsvc (token_manager.py) writes here synchronously on
+            # logout with a TTL matching the token's own remaining
+            # lifetime, so a cache miss means "not blacklisted," not
+            # "unknown" — this is the standard JWT-revocation pattern and
+            # removes MySQL from this path entirely. Falls back to the
+            # original DB query only when no cache is configured, so apps
+            # without Redis keep working exactly as before.
+            from flask_headless_auth.managers.token_manager import TokenManager
+            if cache is not None:
+                try:
+                    jti = jwt_payload['jti']
+                    return bool(cache.get(TokenManager.BLACKLIST_CACHE_KEY.format(jti=jti)))
+                except Exception as e:
+                    logger.warning(f"Blacklist cache check failed, falling back to DB: {e}")
             try:
                 jti = jwt_payload['jti']
                 return blacklisted_token_model.query.filter_by(jti=jti).first() is not None

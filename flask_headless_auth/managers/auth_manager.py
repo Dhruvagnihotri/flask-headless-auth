@@ -13,7 +13,7 @@ class AuthManager:
                  blueprint_name='authsvc', post_login_redirect_url='http://localhost:3000'):
         self.cache = cache  # Cache is optional
         self.user_manager = UserManager(user_data_access, cache=cache)
-        self.token_manager = TokenManager(user_data_access)
+        self.token_manager = TokenManager(user_data_access, cache=cache)
         self.oauth_manager = OAuthManager(
             user_data_access, 
             blueprint_name=blueprint_name,

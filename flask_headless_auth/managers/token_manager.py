@@ -18,6 +18,7 @@ from flask_jwt_extended import (
 from flask import jsonify, make_response, request, current_app
 from urllib.parse import urlparse, parse_qs, urlencode, urlunparse
 from datetime import datetime
+import time
 import logging
 from flask_headless_auth.interfaces import UserDataAccess
 from flask_headless_auth.utils.request import is_browser_request as _is_browser_request
@@ -48,8 +49,13 @@ def _get_hooks_manager():
 
 
 class TokenManager:
-    def __init__(self, user_data_access: UserDataAccess = None):
+    # Shared with core.py's check_if_token_blacklisted (the JWT
+    # token_in_blocklist_loader) — both MUST use this exact key format.
+    BLACKLIST_CACHE_KEY = 'jwt_blacklist:{jti}'
+
+    def __init__(self, user_data_access: UserDataAccess = None, cache=None):
         self.user_data_access = user_data_access
+        self.cache = cache  # Optional (Flask-Caching-style); can be None
 
     # ------------------------------------------------------------------
     # Core token generation (session + audit baked in)
@@ -437,6 +443,32 @@ class TokenManager:
                 return jsonify({'msg': 'Token is already blacklisted.'}), 200
 
             self.user_data_access.blacklist_token(jti)
+
+            # Mirror into cache (Redis, if the app configured one) so the
+            # per-request hot-path check in core.py's token_in_blocklist_loader
+            # never has to hit the DB for the common case. TTL matches the
+            # token's own remaining lifetime — the entry disappears exactly
+            # when it would have stopped mattering anyway, no cleanup job
+            # needed (unlike the MySQL table below, which has none).
+            if self.cache is not None:
+                exp = claims.get('exp')
+                if exp:
+                    # time.time(), NOT datetime.utcnow().timestamp() — the
+                    # latter treats the naive UTC datetime as local time on
+                    # .timestamp(), silently shifting the result by the
+                    # server's UTC offset (confirmed: gave a ~1s TTL instead
+                    # of ~900s on a UTC-7 machine, which would have expired
+                    # every blacklist entry almost immediately and made
+                    # revoked tokens valid again after 1 second).
+                    ttl = max(1, int(exp - time.time()))
+                    try:
+                        self.cache.set(self.BLACKLIST_CACHE_KEY.format(jti=jti), True, timeout=ttl)
+                    except Exception as cache_error:
+                        # Cache is a fast-path optimization, not the source
+                        # of truth when it's down — the MySQL write above
+                        # already succeeded, so a cache failure here must
+                        # not fail the logout itself.
+                        logger.warning(f"Failed to cache blacklist entry for jti {jti}: {cache_error}")
 
             # Revoke the session + audit log
             audit_mgr = _get_audit_manager()
