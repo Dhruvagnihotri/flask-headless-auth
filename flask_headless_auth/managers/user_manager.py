@@ -1,5 +1,6 @@
 from flask import jsonify, current_app, request
 from datetime import datetime, timedelta
+from sqlalchemy.exc import IntegrityError
 import uuid
 import logging
 from flask_headless_auth.interfaces import UserDataAccess
@@ -76,7 +77,26 @@ class UserManager:
         user_data['is_verified'] = False  # Add verification flag
 
         logger.debug(f"Creating user with email: {user_data.get('email')}")
-        new_user = self.user_data_access.create_user(user_data)
+        try:
+            new_user = self.user_data_access.create_user(user_data)
+        except IntegrityError:
+            # Same check-then-create race as OAuth's google_callback/
+            # microsoft_callback (see that fix's commit for the production
+            # incident this pattern caused) - a concurrent request for the
+            # same email (a double-clicked signup, a retried submit) can
+            # slip past the find_user_by_email check above and lose the
+            # race on the DB's own unique constraint. Roll back so this
+            # session isn't left poisoned for whatever request reuses it
+            # next, and return the same "already registered" response the
+            # pre-check would have given if it had seen the row in time -
+            # unlike OAuth login, a duplicate explicit registration should
+            # not silently succeed as the existing account.
+            self.user_data_access.db.session.rollback()
+            logger.info(
+                f"Concurrent registration race for {user_data['email']} - "
+                f"another request already created it"
+            )
+            return jsonify({'error': 'Email is already registered'}), 400
         logger.info(f"Created user with ID: {new_user.get('id')}")
         
         # Fire send_verification_email hook (app handles actual delivery).
