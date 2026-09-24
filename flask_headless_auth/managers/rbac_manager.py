@@ -12,6 +12,7 @@ import logging
 from functools import wraps
 from flask_jwt_extended import get_jwt
 from flask import jsonify, current_app
+from sqlalchemy.exc import IntegrityError
 
 from flask_headless_auth import extensions
 
@@ -471,8 +472,20 @@ class RBACManager:
             role.permissions = permissions
         
         self.db.session.add(role)
-        self.db.session.commit()
-        
+        try:
+            self.db.session.commit()
+        except IntegrityError:
+            # Same check-then-create race as user signup (see oauth_manager.py/
+            # user_manager.py's fix, 2026-09-24) - a concurrent duplicate
+            # create (two admin submits, or two app-boot seed runs) can slip
+            # past the query-based uniqueness check above. Roll back so this
+            # session isn't left poisoned, and raise the same ValueError the
+            # pre-check would have given if it had seen the row in time -
+            # callers (e.g. create_permissions_bulk's seed loop) already
+            # catch ValueError for this exact message shape.
+            self.db.session.rollback()
+            raise ValueError(f"Role '{name}' already exists")
+
         logger.info(f"Created role '{name}' with {len(permission_ids)} permissions")
         return role
     
@@ -637,8 +650,13 @@ class RBACManager:
         )
         
         self.db.session.add(permission)
-        self.db.session.commit()
-        
+        try:
+            self.db.session.commit()
+        except IntegrityError:
+            # Same reasoning as create_role's fix above.
+            self.db.session.rollback()
+            raise ValueError(f"Permission '{name}' already exists")
+
         logger.info(f"Created permission '{name}'")
         return permission
     

@@ -304,7 +304,19 @@ class UserManager:
         if new_password_hash:
             update_data['password_hash'] = new_password_hash
 
-        self.user_data_access.update_user(existing_user['id'], update_data)
+        try:
+            self.user_data_access.update_user(existing_user['id'], update_data)
+        except IntegrityError:
+            # Same check-then-write race as register_user's fix above - two
+            # concurrent profile updates both changing to the same new email
+            # can both pass the find_user_by_email check on line 211 and
+            # both hit update_user, and the loser hits the unique-index
+            # violation with no rollback anywhere in the call chain
+            # (repository.update_user has none either). Roll back and
+            # return the same "already in use" response the pre-check would
+            # have given if it had seen the row in time.
+            self.user_data_access.db.session.rollback()
+            return jsonify({'error': 'Email is already in use'}), 400
         self.user_data_access.log_user_activity(existing_user['id'], "User details updated")
 
         # --- Automatic audit: log profile update ---
