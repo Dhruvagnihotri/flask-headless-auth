@@ -4,11 +4,53 @@ import logging
 import requests
 from urllib.parse import urlsplit
 from flask import request, url_for, jsonify, session, current_app
+from sqlalchemy.exc import IntegrityError
 from flask_headless_auth.oauth.providers import oauth_clients
 from flask_headless_auth.interfaces import UserDataAccess
 from flask_headless_auth.oauth.stateless_handler import StatelessOAuthStateHandler
 
 logger = logging.getLogger(__name__)
+
+
+def _find_or_create_oauth_user(user_data_access, email, user_data):
+    """
+    Find a user by email, creating one if none exists - safe against the
+    concurrent-request race where two OAuth callbacks for the same email
+    (e.g. a double-clicked "Sign in with Google", or a silent re-auth firing
+    while a previous one is still in flight) both see find_user_by_email
+    return None and both attempt create_user.
+
+    Confirmed happening in production (2026-09-24, PDFCourt): an EXISTING
+    user with an active trial got a 500 from a duplicate-key IntegrityError
+    on the email unique index during google_callback, immediately followed
+    by "This Session's transaction has been rolled back due to a previous
+    exception during flush" on a later, unrelated request - this code had
+    no rollback() anywhere, so the session stayed poisoned until something
+    else's request finally rolled it back.
+
+    Pre-checking with find_user_by_email (still done by the caller, for the
+    common non-racing path) can never fully close this gap on its own -
+    there's always a window between that read and the insert. The DB's own
+    unique constraint is the real source of truth, so on a duplicate-key
+    violation here, roll back and re-fetch: the other, winning, concurrent
+    request already created the row we wanted, so use it instead of
+    crashing. Returns (user, is_new_user).
+    """
+    try:
+        return user_data_access.create_user(user_data), True
+    except IntegrityError:
+        user_data_access.db.session.rollback()
+        existing = user_data_access.find_user_by_email(email)
+        if existing is None:
+            # We failed to insert because the row exists, but can't find it
+            # even right after rolling back - genuinely unexpected, don't
+            # paper over it.
+            raise
+        logger.info(
+            f"[StatelessOAuth] Concurrent create_user race for {email} - "
+            f"another request created it first, using that row"
+        )
+        return existing, False
 
 
 def _resolve_redirect_uri(requested_uri, default_uri):
@@ -228,7 +270,7 @@ class OAuthManager:
 
             user = self.user_data_access.find_user_by_email(user_info['email'])
             is_new_user = user is None
-            
+
             if not user:
                 user_data = {
                     'email': user_info['email'],
@@ -238,7 +280,9 @@ class OAuthManager:
                     'last_name': user_info.get('family_name', ''),
                     'is_verified': True
                 }
-                user = self.user_data_access.create_user(user_data)
+                user, is_new_user = _find_or_create_oauth_user(
+                    self.user_data_access, user_info['email'], user_data
+                )
 
             # Store custom data in Flask g context for after_request hooks
             # Apps can use this to access custom data passed through OAuth
@@ -255,6 +299,17 @@ class OAuthManager:
             logger.info(f"[StatelessOAuth] OAuth successful for user: {user_info['email']}")
             return user, redirect_uri
         except Exception as e:
+            # Roll back whatever this request's session was mid-transaction
+            # on (e.g. a failed flush) before returning - without this, the
+            # poisoned session survives into whichever request reuses it
+            # next, which then fails with an unrelated-looking "transaction
+            # has been rolled back due to a previous exception" error
+            # instead of the real cause. Safe even when nothing is pending
+            # (rollback() on a clean session is a no-op).
+            try:
+                self.user_data_access.db.session.rollback()
+            except Exception:
+                pass
             logger.error(f"Error in google_callback: {e}")
             import traceback
             logger.error(traceback.format_exc())
@@ -356,14 +411,16 @@ class OAuthManager:
 
             user = self.user_data_access.find_user_by_email(user_info['email'])
             is_new_user = user is None
-            
+
             if not user:
                 user_data = {
                     'email': user_info['email'],
                     'provider': 'microsoft',
                     'role_id': 2,
                 }
-                user = self.user_data_access.create_user(user_data)
+                user, is_new_user = _find_or_create_oauth_user(
+                    self.user_data_access, user_info['email'], user_data
+                )
 
             # Store custom data in Flask g context for after_request hooks
             # Apps can use this to access custom data passed through OAuth
@@ -380,6 +437,12 @@ class OAuthManager:
             logger.info(f"[StatelessOAuth] OAuth successful for user: {user_info['email']}")
             return user, redirect_uri
         except Exception as e:
+            # See the matching comment in google_callback's except block -
+            # same reasoning, same fix.
+            try:
+                self.user_data_access.db.session.rollback()
+            except Exception:
+                pass
             logger.error(f"Error in microsoft_callback: {e}")
             import traceback
             logger.error(traceback.format_exc())
