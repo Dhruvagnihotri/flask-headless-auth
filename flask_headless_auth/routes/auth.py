@@ -180,12 +180,13 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
     @authsvc.route('/token/refresh', methods=['POST'])
     @jwt_required(refresh=True)
     def refresh():
+        identity = None  # set inside try; keeps the except block's log line safe if get_jwt_identity() itself raises
         try:
             identity = get_jwt_identity()  # string (email)
             user = user_data_access.find_user_by_email(identity)
             return auth_manager.refresh_token_and_set_cookies(user)
         except Exception as e:
-            print(f"Error refreshing token: {e}")
+            logger.error("Error refreshing token for identity=%r: %s", identity, e, exc_info=True)
             return jsonify({'error': 'Error refreshing token: ' + str(e)}), 500
     
     # Logout and Blacklist Token
@@ -217,7 +218,7 @@ def create_auth_blueprint(user_model, blacklisted_token_model, mfa_token_model,
                 }
             }), 200
         except Exception as e:
-            print(f"Error in check-auth: {e}")
+            logger.error("Error in check-auth: %s", e, exc_info=True)
             return jsonify({"error": "Error checking authentication", "details": str(e)}), 500
     
     # Get Logged-In User Details

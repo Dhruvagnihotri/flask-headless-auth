@@ -219,7 +219,22 @@ class AuthSvc:
         from flask_headless_auth.extensions import get_jwt
         
         self.jwt = get_jwt()
-        
+
+        # NOTE: this key is "jwt", not "flask-jwt-extended" (the key
+        # JWTManager.init_app actually registers under) - so this check is
+        # always True and init_app always runs. Deliberately NOT "fixed" to
+        # the correct key here: if a consuming app ever creates its own
+        # JWTManager(app) before AuthSvc, correcting this key would skip
+        # self.jwt.init_app(app) entirely, leaving self.jwt (and the
+        # blacklist/error loaders registered on it below) permanently
+        # disconnected from the app - silently disabling logout/blacklist
+        # checking instead of fixing the "app's own loaders get overwritten"
+        # problem it looks like it would fix. Properly supporting "app
+        # brought its own JWTManager" needs this library's loaders attached
+        # to WHICHEVER manager ends up registered, not assumed to always be
+        # self.jwt - a real redesign, not a one-line key correction. None of
+        # the three current consuming apps create their own JWTManager, so
+        # this is inert today either way.
         if 'jwt' not in app.extensions:
             self.jwt.init_app(app)
         
@@ -272,7 +287,83 @@ class AuthSvc:
                 db.session.rollback()
                 logger.warning(f"Token blacklist check failed (schema mismatch?): {e}")
                 return False  # Assume not blacklisted if we can't check
-        
+
+        # By default, flask-jwt-extended's expired/invalid/missing/revoked
+        # token callbacks are completely silent - they return a JSON error
+        # response straight to the client with no application-level log
+        # line anywhere. That means every auth failure (an expired access
+        # token, a 401 on /token/refresh because the refresh token itself
+        # is missing/expired/invalid, a blacklisted token after logout) is
+        # invisible server-side: nothing to grep, nothing to alert on, no
+        # way to tell "this session genuinely needed a re-login" apart from
+        # "the refresh endpoint is broken" after the fact. Each loader
+        # below logs one line with what's actually knowable (identity +
+        # token type for expired/revoked, which have the decoded payload;
+        # just the reason string for invalid/missing, which don't) and then
+        # delegates to flask-jwt-extended's own default callback for the
+        # actual response - so this is additive observability only, never
+        # a change to the response body/status code any existing consumer
+        # (frontend or otherwise) already depends on.
+        #
+        # Each registration is guarded on the current callback still being
+        # flask-jwt-extended's own default - so if a consuming app already
+        # registered its own loader (on this same shared JWTManager
+        # singleton, before calling AuthSvc(app)) that app's loader wins
+        # instead of being silently clobbered. None of the three current
+        # consuming apps do this today (grepped), but a future one might.
+        #
+        # Log levels are split deliberately, not uniformly WARNING: an
+        # expired ACCESS token and a missing token are the normal, expected
+        # shape of every refresh cycle and every anonymous page load - at
+        # WARNING they'd drown out the signal that's actually worth
+        # alerting on, which is an expired/invalid/revoked REFRESH token
+        # (that one genuinely means "this session needs a real re-login").
+        from flask import request
+        from flask_jwt_extended.default_callbacks import (
+            default_expired_token_callback,
+            default_invalid_token_callback,
+            default_revoked_token_callback,
+            default_unauthorized_callback,
+        )
+
+        identity_claim = app.config.get("JWT_IDENTITY_CLAIM", "sub")
+
+        if self.jwt._expired_token_callback is default_expired_token_callback:
+            @self.jwt.expired_token_loader
+            def _log_expired_token(jwt_header, jwt_payload):
+                token_type = jwt_payload.get("type")
+                level = logging.WARNING if token_type == "refresh" else logging.INFO
+                logger.log(
+                    level,
+                    "JWT expired: identity=%r token_type=%r path=%r",
+                    jwt_payload.get(identity_claim), token_type, request.path,
+                )
+                return default_expired_token_callback(jwt_header, jwt_payload)
+
+        if self.jwt._invalid_token_callback is default_invalid_token_callback:
+            @self.jwt.invalid_token_loader
+            def _log_invalid_token(error_string):
+                logger.warning("JWT invalid: reason=%r path=%r", error_string, request.path)
+                return default_invalid_token_callback(error_string)
+
+        if self.jwt._unauthorized_callback is default_unauthorized_callback:
+            @self.jwt.unauthorized_loader
+            def _log_unauthorized(error_string):
+                # INFO, not WARNING: this fires on every anonymous
+                # page-load auth check (e.g. a frontend's /check-auth or
+                # /user/@me probe before login) - routine, not actionable.
+                logger.info("JWT missing: reason=%r path=%r", error_string, request.path)
+                return default_unauthorized_callback(error_string)
+
+        if self.jwt._revoked_token_callback is default_revoked_token_callback:
+            @self.jwt.revoked_token_loader
+            def _log_revoked_token(jwt_header, jwt_payload):
+                logger.warning(
+                    "JWT revoked: identity=%r token_type=%r path=%r",
+                    jwt_payload.get(identity_claim), jwt_payload.get("type"), request.path,
+                )
+                return default_revoked_token_callback(jwt_header, jwt_payload)
+
         logger.info("JWT initialized")
     
     def _init_cache_detection(self, app):
