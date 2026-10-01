@@ -87,19 +87,23 @@ dependencies = [
     "Flask-Limiter>=3.3.0",
     "Flask-Caching>=2.0.0",
     "Flask-CORS>=4.0.0",
-    "Flask-WTF>=1.1.0",
     "Flask-Talisman>=1.0.0",
     "Authlib>=1.2.0",
     "PyJWT[crypto]>=2.8.0",  # [crypto] pulls in `cryptography` for RS256 verification (PyJWKClient) —
                               # currently also present transitively via Authlib, but that's not a
                               # guarantee worth relying on for a security-critical signature check.
-    "python-dotenv>=1.0.0",
-    "PyYAML>=6.0",
     "Werkzeug>=2.0.0",
     "itsdangerous>=2.1.0",
 ]
 
 [project.optional-dependencies]
+# Only needed if WTF_CSRF_ENABLED is turned on (core.py's _init_security
+# lazily imports flask_wtf.csrf only inside that branch) — off by default,
+# so most apps never need this installed at all:
+# pip install flask-headless-auth[csrf]
+csrf = [
+    "Flask-WTF>=1.1.0",
+]
 dev = [
     "pytest>=7.4.0",
     "pytest-cov>=4.1.0",
@@ -117,6 +121,3 @@ Documentation = "https://github.com/Dhruvagnihotri/flask-headless-auth#readme"
 where = ["."]
 include = ["flask_headless_auth*"]
 exclude = ["tests*", "examples*", "instance*"]
-
-[tool.setuptools.package-data]
-flask_headless_auth = ["*.yml", "*.yaml"]

@@ -358,19 +358,32 @@ class AuthSvc:
     def _init_security(self, app):
         """Initialize security headers."""
         from flask_talisman import Talisman
-        from flask_wtf.csrf import CSRFProtect
-        
+
         force_https = app.config.get('AUTHSVC_FORCE_HTTPS', False)
-        
+
         csp = {
             'default-src': ["'self'", "'unsafe-inline'", "'unsafe-eval'", '*.com'],
             'img-src': ['*', 'self', 'blob:', 'data:']
         }
-        
+
         Talisman(app, force_https=force_https, content_security_policy=csp)
-        
-        # CSRF Protection
+
+        # CSRF Protection — Flask-WTF is an optional extra (`pip install
+        # flask-headless-auth[csrf]`), not a hard dependency, since this is
+        # the only thing in the library that needs it and most apps leave
+        # WTF_CSRF_ENABLED off (double-submit CSRF isn't needed when JWTs
+        # are delivered via SameSite cookies or Authorization headers
+        # rather than ambient browser session cookies). Importing inside
+        # this branch, not unconditionally above, means apps that never
+        # enable this don't need flask-wtf installed at all.
         if app.config.get('WTF_CSRF_ENABLED', False):
+            try:
+                from flask_wtf.csrf import CSRFProtect
+            except ImportError as e:
+                raise ImportError(
+                    "WTF_CSRF_ENABLED is True but flask-wtf isn't installed. "
+                    "Install it with: pip install flask-headless-auth[csrf]"
+                ) from e
             CSRFProtect(app)
     
     def _init_oauth(self, app, **kwargs):
