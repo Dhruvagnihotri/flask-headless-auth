@@ -274,14 +274,30 @@ class TokenManager:
         - Logs token.refresh audit event
         """
         # Touch the current session -- returns False if the session was
-        # revoked due to inactivity timeout
+        # revoked due to inactivity timeout. session_id (read here, before
+        # the call, instead of further down) is passed through as a
+        # fallback lookup key: it's stable across jti rotation, unlike jti
+        # itself, so when a CONCURRENT refresh has already rotated this
+        # session's jti (two tabs waking together, a slow request racing a
+        # retry), the raw jti lookup misses but the session_id lookup still
+        # finds the row - meaning the session is genuinely still alive, just
+        # already rotated by the other request, not actually idle-timed-out.
+        # Without this, that race was indistinguishable from real inactivity
+        # here, producing a hard "session expired due to inactivity" logout
+        # (that then unsets cookies, including whatever the winning request
+        # had just set) for something that had nothing to do with inactivity.
+        # Confirmed via direct reproduction of both the serialized and
+        # interleaved versions of this race.
         audit_mgr = _get_audit_manager()
+        old_session_id = None
+        old_jti = None
         if audit_mgr:
             try:
                 claims = get_jwt()
                 old_jti = claims.get('jti')
+                old_session_id = claims.get('session_id')
                 if old_jti:
-                    session_alive = audit_mgr.touch_session(old_jti)
+                    session_alive = audit_mgr.touch_session(old_jti, session_id=old_session_id)
                     if not session_alive:
                         # Session expired due to inactivity -- force re-login
                         response = make_response(jsonify({
@@ -293,17 +309,6 @@ class TokenManager:
             except Exception:
                 pass
 
-        # Get existing session_id from current JWT to reuse it
-        old_session_id = None
-        old_jti = None
-        if audit_mgr:
-            try:
-                claims = get_jwt()
-                old_session_id = claims.get('session_id')
-                old_jti = claims.get('jti')
-            except Exception:
-                pass
-        
         # Generate new tokens while REUSING the existing session (prevents duplicate session creation)
         tokens = self.generate_token_authsvc(
             user, 
@@ -473,7 +478,7 @@ class TokenManager:
             # Revoke the session + audit log
             audit_mgr = _get_audit_manager()
             if audit_mgr:
-                audit_mgr.revoke_session_by_jti(jti, reason='user_logout')
+                audit_mgr.revoke_session_by_jti(jti, reason='user_logout', session_id=session_id)
                 audit_mgr.log_event(
                     action='user.logout',
                     user_id=user_id,

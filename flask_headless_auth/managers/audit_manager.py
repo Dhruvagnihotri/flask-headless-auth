@@ -341,13 +341,49 @@ class AuditManager:
                 pass
             return str(uuid.uuid4())  # return a UUID anyway so the JWT is valid
 
-    def touch_session(self, jti):
+    def touch_session(self, jti, session_id=None):
         """
         Update last_activity on token refresh.
 
         If ``AUTHSVC_SESSION_INACTIVITY_TIMEOUT`` is configured and the
         session has been idle longer than that, the session is **revoked**
         instead of touched.
+
+        session_id: optional fallback lookup key, stable across jti
+        rotation (unlike jti itself). Each refresh rewrites the session
+        row's jti to the newly-issued refresh token's jti - so when a
+        CONCURRENT refresh has already rotated this session (two tabs
+        whose proactive timers fire together, a slow request racing a
+        retry), the caller's jti is already stale and the raw jti lookup
+        below misses even though the session is genuinely still alive.
+        Falling back to session_id in that case distinguishes "this
+        session was already rotated by another request" (still alive) from
+        "this session doesn't exist / was actually revoked" (dead) - the
+        two cases a bare jti miss can't tell apart on its own. Confirmed via
+        direct reproduction: without this, a losing request's own
+        legitimate refresh got rejected as "expired due to inactivity" with
+        no real inactivity involved, which (for a browser receiving the
+        response after the winner's) could delete the cookies the winning
+        request had just set.
+
+        The fallback is bounded by AUTHSVC_REFRESH_REUSE_GRACE_SECONDS
+        (default 30s) measured against the matched row's own last_activity,
+        NOT left unconditional. An adversarial review of an earlier version
+        of this fix caught a real regression: an unconditional fallback
+        skips the inactivity-cutoff check entirely, so ANY old refresh
+        token for a session - not just one from a genuine few-second race -
+        would resurrect it, since every real refresh keeps rotating the row
+        to a jti that token can never match again. A captured refresh token
+        (dual delivery mode puts it in a JS-readable response body) could
+        then be replayed indefinitely to defeat an inactivity timeout
+        entirely. The grace window is intentionally far shorter than any
+        realistic AUTHSVC_SESSION_INACTIVITY_TIMEOUT - last_activity is at
+        most a few seconds old by the time the fallback runs in a genuine
+        race (whichever request's jti DID match just bumped it), so a real
+        race always passes while a stale/replayed token from outside that
+        tiny window always fails, through the SAME cutoff logic as the
+        primary path - this doesn't bypass that check, it reaches it with a
+        different, still-fresh last_activity reading.
 
         Returns:
             True  -- session is alive, refresh should proceed.
@@ -356,6 +392,32 @@ class AuditManager:
         """
         try:
             session = self.UserSession.query.filter_by(jti=jti, revoked=False).first()
+            if not session and session_id:
+                # jti miss but the session itself may just have been
+                # rotated elsewhere already - look it up by its stable id.
+                # Narrow try/except on purpose, separate from the broad
+                # fail-open one at the bottom of this method: a bad
+                # AUTHSVC_REFRESH_REUSE_GRACE_SECONDS value (e.g. an env var
+                # string instead of an int) must degrade to "don't use the
+                # fallback" (falls through to the ordinary not-found
+                # rejection below), not bubble up to that broad handler -
+                # which returns True unconditionally and would make a
+                # config mistake silently defeat the inactivity timeout
+                # entirely, the exact bug this fallback was just fixed to
+                # not have.
+                try:
+                    fallback = self.UserSession.query.filter_by(
+                        session_id=session_id, revoked=False).first()
+                    grace_seconds = int(current_app.config.get(
+                        'AUTHSVC_REFRESH_REUSE_GRACE_SECONDS', 30))
+                    if (
+                        fallback is not None
+                        and fallback.last_activity is not None
+                        and datetime.utcnow() - fallback.last_activity <= timedelta(seconds=grace_seconds)
+                    ):
+                        session = fallback
+                except Exception:
+                    pass
             if not session:
                 return False
 
@@ -406,10 +468,26 @@ class AuditManager:
                 pass
             return True  # Fail-open: don't break refresh on unexpected errors
 
-    def revoke_session_by_jti(self, jti, reason='user_logout'):
-        """Revoke the session tied to a JWT.  Called on logout."""
+    def revoke_session_by_jti(self, jti, reason='user_logout', session_id=None):
+        """Revoke the session tied to a JWT. Called on logout.
+
+        session_id: fallback lookup key. /logout is access-token-protected,
+        so the jti this receives is the ACCESS token's jti - but UserSession
+        rows are keyed by the REFRESH token's jti, meaning the primary
+        lookup here never matched anything and logout never actually
+        revoked the session row at all (confirmed: pre-existing, found
+        while reviewing the touch_session session_id fallback above, which
+        would otherwise make this gap worse - a session that logout failed
+        to revoke now also survives a replayed stale refresh token via that
+        fallback, for the token's full remaining lifetime instead of just
+        until the next real refresh). session_id is stable regardless of
+        which token type it was read from, so it still finds the right row.
+        """
         try:
             session = self.UserSession.query.filter_by(jti=jti, revoked=False).first()
+            if not session and session_id:
+                session = self.UserSession.query.filter_by(
+                    session_id=session_id, revoked=False).first()
             if session:
                 session.is_active = False
                 session.revoked = True
