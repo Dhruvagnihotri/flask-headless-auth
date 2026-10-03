@@ -1,15 +1,89 @@
 import base64
 import json
 import logging
+import time
 import requests
 from urllib.parse import urlsplit
 from flask import request, url_for, jsonify, session, current_app
-from sqlalchemy.exc import IntegrityError
+from sqlalchemy.exc import IntegrityError, OperationalError
 from flask_headless_auth.oauth.providers import oauth_clients
 from flask_headless_auth.interfaces import UserDataAccess
 from flask_headless_auth.oauth.stateless_handler import StatelessOAuthStateHandler
 
 logger = logging.getLogger(__name__)
+
+
+# MySQL error codes that mean "the connection itself died or never opened" -
+# confirmed from real PDFCourt production incidents (2003, 2013) plus the
+# same family's documented sibling (2006). Deliberately NOT a bare
+# OperationalError catch: pymysql also raises this class for access-denied
+# (1045), too-many-connections (1040), and lock-wait-timeout (1205) - none
+# of those are helped by a retry, and retrying "too many connections" during
+# a real connection storm would add load at the worst possible moment.
+_TRANSIENT_MYSQL_CONNECTION_ERROR_CODES = {2003, 2006, 2013}
+
+
+def _is_transient_connection_error(exc: OperationalError) -> bool:
+    orig = getattr(exc, 'orig', None)
+    code = orig.args[0] if orig is not None and getattr(orig, 'args', None) else None
+    return code in _TRANSIENT_MYSQL_CONNECTION_ERROR_CODES
+
+
+def _call_with_db_retry(fn, user_data_access, *, retries=1, backoff_seconds=0.3):
+    """
+    Retry fn() on a transient connection-level OperationalError (dropped
+    connection / handshake timeout to a remote DB-as-a-service host, not a
+    logic error) - see _is_transient_connection_error for exactly which
+    error codes qualify.
+
+    Confirmed recurring in production (PDFCourt, 2026-09-25/28/29):
+    `pymysql.err.OperationalError` (2003 "handshake operation timed out",
+    2013 "Lost connection to MySQL server during query") hit google_callback
+    directly, 500ing a real user's login with no recovery. pool_pre_ping
+    (already configured app-wide) only tests an EXISTING pooled connection
+    before handing it out - it can't help when a connection dies mid-query,
+    or when opening a brand-new replacement connection itself times out on
+    the handshake. Only an application-level retry closes that gap.
+
+    Takes `user_data_access` rather than its `.db.session` directly, and
+    only reaches for `.db.session` inside the except block (never on the
+    happy path) - some consuming app's custom UserDataAccess implementation
+    might not have a `.db` attribute at all, and eagerly evaluating it on
+    every single login (success or not) would turn a login-time
+    AttributeError into a hard failure for every OAuth login on that app,
+    not just the rare transient-error path this is meant to protect.
+
+    retries=1 (not higher): pdfwiz's gunicorn config pairs a 30s MySQL
+    read_timeout with only a 30s default worker timeout (its own Procfile) -
+    a second retry on a mid-query read-timeout failure (3 x 30s = 90s)
+    would get the worker killed before it could even finish, making the
+    extra attempt pure downside. One retry covers the observed failure
+    shape (a single dead pooled connection) without that risk.
+    """
+    last_exc = None
+    for attempt in range(retries + 1):
+        try:
+            return fn()
+        except OperationalError as e:
+            if not _is_transient_connection_error(e):
+                raise
+            last_exc = e
+            session = getattr(getattr(user_data_access, 'db', None), 'session', None)
+            if session is not None:
+                try:
+                    session.rollback()
+                except Exception as rollback_exc:
+                    logger.warning(
+                        f"[StatelessOAuth] rollback() itself failed while recovering "
+                        f"from a transient DB error: {rollback_exc}"
+                    )
+            if attempt < retries:
+                logger.warning(
+                    f"[StatelessOAuth] Transient DB connection error on attempt "
+                    f"{attempt + 1}/{retries + 1}, retrying: {getattr(e, 'orig', e)}"
+                )
+                time.sleep(backoff_seconds)
+    raise last_exc
 
 
 def _find_or_create_oauth_user(user_data_access, email, user_data):
@@ -268,10 +342,31 @@ class OAuthManager:
             user_info = userinfo_response.json()
             logger.info(f"[StatelessOAuth] Successfully fetched user info for: {user_info.get('email')}")
 
-            user = self.user_data_access.find_user_by_email(user_info['email'])
-            is_new_user = user is None
+            create_attempted = {"value": False}
 
-            if not user:
+            def _lookup_or_create_google_user():
+                user = self.user_data_access.find_user_by_email(user_info['email'])
+                if user is not None:
+                    if create_attempted["value"]:
+                        # The previous attempt's create_user() may have
+                        # committed before an OperationalError fired on/after
+                        # that same commit (a lost acknowledgement, not a
+                        # lost write) - this find now sees that row and
+                        # reports it as pre-existing. Not a regression (the
+                        # pre-retry behavior for this same race was a hard
+                        # 500 on the same request, so is_new_user never fired
+                        # true for it either) but worth being able to see,
+                        # since registration_hooks.py's welcome-email/promo
+                        # grant depends on is_new_user being correct.
+                        logger.warning(
+                            f"[StatelessOAuth] {user_info['email']} found after a prior "
+                            f"create attempt failed with a transient DB error in this same "
+                            f"request - likely a lost commit acknowledgement. Reporting "
+                            f"is_new_user=False; this user may not get their welcome email "
+                            f"or promo trial grant."
+                        )
+                    return user, False
+                create_attempted["value"] = True
                 user_data = {
                     'email': user_info['email'],
                     'provider': 'google',
@@ -280,9 +375,13 @@ class OAuthManager:
                     'last_name': user_info.get('family_name', ''),
                     'is_verified': True
                 }
-                user, is_new_user = _find_or_create_oauth_user(
+                return _find_or_create_oauth_user(
                     self.user_data_access, user_info['email'], user_data
                 )
+
+            user, is_new_user = _call_with_db_retry(
+                _lookup_or_create_google_user, self.user_data_access
+            )
 
             # Store OAuth identity in Flask g context for after_request hooks
             # UNCONDITIONALLY - not just when custom_data (a promo code, in
@@ -416,18 +515,35 @@ class OAuthManager:
 
             logger.info(f"[StatelessOAuth] Successfully fetched user info for: {user_info.get('email')}")
 
-            user = self.user_data_access.find_user_by_email(user_info['email'])
-            is_new_user = user is None
+            create_attempted = {"value": False}
 
-            if not user:
+            def _lookup_or_create_microsoft_user():
+                user = self.user_data_access.find_user_by_email(user_info['email'])
+                if user is not None:
+                    if create_attempted["value"]:
+                        # See the matching comment in google_callback - same
+                        # lost-commit-acknowledgement race, same reasoning.
+                        logger.warning(
+                            f"[StatelessOAuth] {user_info['email']} found after a prior "
+                            f"create attempt failed with a transient DB error in this same "
+                            f"request - likely a lost commit acknowledgement. Reporting "
+                            f"is_new_user=False; this user may not get their welcome email "
+                            f"or promo trial grant."
+                        )
+                    return user, False
+                create_attempted["value"] = True
                 user_data = {
                     'email': user_info['email'],
                     'provider': 'microsoft',
                     'role_id': 2,
                 }
-                user, is_new_user = _find_or_create_oauth_user(
+                return _find_or_create_oauth_user(
                     self.user_data_access, user_info['email'], user_data
                 )
+
+            user, is_new_user = _call_with_db_retry(
+                _lookup_or_create_microsoft_user, self.user_data_access
+            )
 
             # Store OAuth identity in Flask g context for after_request hooks
             # UNCONDITIONALLY - not just when custom_data (a promo code, in
